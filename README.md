@@ -84,7 +84,7 @@ sudo pacman -S wl-clipboard grim slurp
 Clone repository:
 
 ``` bash
-git clone <your-repository-url>
+git clone https://github.com/Melony-mai/wayocr.git
 cd wayocr
 ```
 
