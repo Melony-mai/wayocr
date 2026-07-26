@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+
+# Build
+build/
+dist/
+
+# OCR temporary files
+*_processed.png
+
+# Test images
+test.png
+
+# Editor
+.vscode/

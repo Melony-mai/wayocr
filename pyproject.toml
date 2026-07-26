@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wayocr"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "onnxruntime>=1.27.0",
+    "rapidocr>=3.9.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+wayocr = "wayocr.main:main"
+wayocr-server = "wayocr.server:main"
+wayocr-status = "wayocr.status:main"
