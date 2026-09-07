@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MaiOCR Tray
+GenericName=MaiOCR system tray indicator
+Comment=Background tray indicator and status menu for MaiOCR
+Exec=maiocr-tray
+Icon=maiocr
+Terminal=false
+Categories=Utility;TextTools;OCR;TrayIcon;
+Keywords=tray;status;maiocr;ocr;
+StartupNotify=false

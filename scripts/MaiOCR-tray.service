@@ -1,0 +1,22 @@
+[Unit]
+Description=MaiOCR Tray Indicator (background)
+Documentation=man:maiocr(1)
+After=graphical-session.target MaiOCR.service
+# Do not auto-stop with MaiOCR.service: the tray should stay around
+# even if the server is briefly down (it will simply report
+# "stopped" in the status file).
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/maiocr-tray
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=5
+
+# Stay alive but allow easy restart; the tray reads settings and the
+# status file from disk on every refresh.
+Environment=PYTHONUNBUFFERED=1
+Environment=LD_LIBRARY_PATH=/opt/cuda/lib64:/usr/lib
+
+[Install]
+WantedBy=default.target

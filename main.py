@@ -1,6 +1,5 @@
-def main():
-    print("Hello from wayocr!")
-
+"""Top-level launcher: ``python main.py`` runs the OCR client."""
+from maiocr.cli import main
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

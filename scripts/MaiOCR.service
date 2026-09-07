@@ -1,0 +1,20 @@
+[Unit]
+Description=MaiOCR OCR Server (persistent, lazy GPU)
+Documentation=man:maiocr(1)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/maiocr-server
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+# Keep the service running but allow easy restart; the engine itself
+# releases VRAM via `maiocr release-vram`.
+Environment=PYTHONUNBUFFERED=1
+# Make sure onnxruntime-gpu can find the system CUDA / cuDNN libs.
+Environment=LD_LIBRARY_PATH=/opt/cuda/lib64:/usr/lib
+
+[Install]
+WantedBy=default.target

@@ -3,20 +3,44 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wayocr"
-version = "0.1.0"
-description = "Add your description here"
+name = "maiocr"
+version = "0.2.0"
+description = "MaiOCR - GPU-accelerated screenshot OCR service for Wayland"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
-    "onnxruntime>=1.27.0",
+    "onnxruntime-gpu>=1.27.0",
     "rapidocr>=3.9.2",
+    "opencv-python>=4.8",
+    "numpy>=1.26",
+    "pillow>=10",
+    "PyYAML>=6",
 ]
+
+[project.optional-dependencies]
+tray = ["pyqt6"]
+dev = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["maiocr*"]
+
+[tool.setuptools.package-data]
+maiocr = ["locales/*.yml", "data/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
 
 [project.scripts]
-wayocr = "wayocr.main:main"
-wayocr-server = "wayocr.server:main"
-wayocr-status = "wayocr.status:main"
+maiocr = "maiocr.cli:main"
+maiocr-server = "maiocr.server:main"
+maiocr-status = "maiocr.status:main"
+maiocr-tray = "maiocr.tray:main"
+wayocr = "maiocr.compat:main"
+wayocr-server = "maiocr.compat_server:main"
+wayocr-status = "maiocr.compat_status:main"

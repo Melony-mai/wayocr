@@ -1,0 +1,10 @@
+// MaiOCR — Niri key bindings to drop into your niri config.
+//
+// Add to ~/.config/niri/config.kdl (or include from your dms/ layout):
+//
+//   include "maiocr.kdl"
+//
+// or paste the bind lines into your existing binds.kdl.
+
+Mod+Print hotkey-overlay-title="OCR Screenshot" { spawn "maiocr"; }
+Mod+Shift+Print hotkey-overlay-title="MaiOCR status" { spawn "maiocr-status"; }
