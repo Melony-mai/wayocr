@@ -462,13 +462,17 @@ def cmd_settings_set(args) -> int:
         elif k in ("log_backup_count", "log_retention_days"):
             updates[k] = max(0, int(v))
         elif k == "notification_mode":
-            if v not in ("system", "custom"):
+            if v not in ("system", "dbus", "custom"):
                 print(
-                    f"invalid notification_mode: {v} (use 'system' or 'custom')",
+                    "invalid notification_mode: "
+                    f"{v} (use 'system', 'dbus' or 'custom')",
                     file=sys.stderr,
                 )
                 return 2
-            updates[k] = v
+            # ``custom`` is accepted as a synonym for ``dbus`` so old
+            # settings files keep working.  We normalise to ``dbus``
+            # on the way in.
+            updates[k] = "dbus" if v == "custom" else v
         elif k == "notification_duration":
             updates[k] = max(1, int(v))
         elif k in ("click_action_left", "click_action_double"):

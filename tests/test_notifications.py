@@ -182,11 +182,12 @@ def test_unknown_active_backend_drops_event():
     notifications.notify_ocr_completed(1)
 
 
-def test_settings_initialise_picks_correct_backend(monkeypatch, tmp_path):
-    """When ``initialise`` is called and the user picked ``custom``
-    but PyQt6 is missing, the manager must not fall back to the
-    system backend. Mutual exclusion: in custom mode with no
-    rendering capability, the silent backend is used.
+def test_settings_initialise_falls_back_to_null_when_all_unavailable(
+    monkeypatch, tmp_path,
+):
+    """When the user picked ``dbus`` / ``custom`` and **neither**
+    D-Bus nor ``notify-send`` are available, the manager must
+    drop the event silently rather than crash.
     """
     s = settings_mod.get_settings(reload=True)
     s.notification_mode = "custom"
@@ -204,65 +205,70 @@ def test_settings_initialise_picks_correct_backend(monkeypatch, tmp_path):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
+    # Pretend D-Bus is unavailable.
+    class _MissingDbus:
+        def __getattr__(self, name):
+            raise ImportError("dbus unavailable in test env")
+    monkeypatch.setitem(sys.modules, "dbus", _MissingDbus())
+
+    # Pretend notify-send is unavailable too.
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "which", lambda cmd: None)
+
     notifications.initialise()
-    active = notifications.get_manager().get_active_name()
-    # The system backend must NOT be the active one in custom mode.
-    assert active != "system"
-    assert active == "null"
-
-
-def test_custom_mode_cli_uses_silent_backend(monkeypatch, tmp_path):
-    """A CLI process (no Qt event loop) running with custom mode
-    must use the silent backend, NOT the system backend. This is the
-    core mutual-exclusion guarantee: a process that cannot render a
-    bubble in custom mode must not fall back to notify-send.
-    """
-    s = settings_mod.get_settings(reload=True)
-    s.notification_mode = "custom"
-    settings_mod.save_settings(s)
-
-    # No Qt runtime is present; no event loop is running.
-    notifications.reset_for_tests()
-    notifications.initialise()
+    # The manager falls back to the null (silent) backend.
     assert notifications.get_manager().get_active_name() == "null"
 
 
-def test_initialise_selects_custom_when_qt_and_loop_available(monkeypatch, tmp_path):
-    """The tray process has PyQt6 *and* a running event loop, so
-    the custom backend must be selected.
+def test_custom_mode_cli_uses_dbus_backend(monkeypatch, tmp_path):
+    """A CLI process (no Qt event loop) running with custom mode
+    must use the D-Bus backend if available, NOT the system
+    backend. This is the core mutual-exclusion guarantee: a process
+    that cannot render a bubble in custom mode must not fall back
+    to notify-send.
     """
+    # Patch the D-Bus connection to succeed so the test environment
+    # matches a normal Niri session.
+    fake_proxy = mock.MagicMock()
+
+    import maiocr.notifications as ns
+
+    def fake_connect():
+        return True, mock.MagicMock(), fake_proxy, fake_proxy
+
+    monkeypatch.setattr(ns.DBusBackend, "_connect", staticmethod(fake_connect))
+
     s = settings_mod.get_settings(reload=True)
     s.notification_mode = "custom"
-    s.notification_duration = 7
     settings_mod.save_settings(s)
 
-    # Mock the Qt environment enough for CustomBubbleBackend.is_available
-    fake_qt = mock.MagicMock()
-    fake_qt.QApplication.instance.return_value = mock.MagicMock()
-    sys.modules["PyQt6.QtCore"] = fake_qt
-    sys.modules["PyQt6.QtGui"] = fake_qt
-    sys.modules["PyQt6.QtWidgets"] = fake_qt
-    # Make _has_qt_event_loop() return True
-    fake_qt.QApplication.instance.return_value._maiocr_event_loop_started = True
+    notifications.reset_for_tests()
+    notifications.initialise()
+    assert notifications.get_manager().get_active_name() == "dbus"
 
-    try:
-        notifications.reset_for_tests()
-        notifications.initialise()
-        assert notifications.get_manager().get_active_name() == "custom"
-        # The custom backend should know the configured duration
-        backend = notifications.get_manager().get("custom")
-        assert backend is not None
-        assert backend._duration == 7
-    finally:
-        # Restore the real PyQt6 modules so later tests are not
-        # affected by the mock.
-        for name in (
-            "PyQt6.QtCore",
-            "PyQt6.QtGui",
-            "PyQt6.QtWidgets",
-            "PyQt6",
-        ):
-            sys.modules.pop(name, None)
+
+def test_initialise_selects_dbus_backend(monkeypatch, tmp_path):
+    """When the user picked ``dbus`` mode and the D-Bus service is
+    reachable, the D-Bus backend must be the active one.
+    """
+    fake_proxy = mock.MagicMock()
+
+    import maiocr.notifications as ns
+
+    def fake_connect():
+        return True, mock.MagicMock(), fake_proxy, fake_proxy
+
+    monkeypatch.setattr(ns.DBusBackend, "_connect", staticmethod(fake_connect))
+
+    s = settings_mod.get_settings(reload=True)
+    s.notification_mode = "dbus"
+    settings_mod.save_settings(s)
+
+    notifications.reset_for_tests()
+    notifications.initialise()
+    assert notifications.get_manager().get_active_name() == "dbus"
+    # The D-Bus backend should be available.
+    assert notifications.get_manager().get("dbus") is not None
 
 
 def test_legacy_compat_notify_routes_through_manager():
@@ -503,11 +509,11 @@ def test_silent_event_kind_exists():
     assert notifications.EventKind.SILENT.value == "silent"
 
 
-def test_task_completion_helpers_use_silent_kind():
+def test_task_completion_helpers_use_success_kind():
     """``notify_ocr_completed`` and ``notify_vram_released`` are
-    explicit "task done" events — they should use the silent kind
-    so the custom backend renders a pill and the system backend
-    marks the notify-send call transient.
+    explicit "task done" events.  The D-Bus backend sets the
+    urgency (low for success) and the user's daemon controls the
+    display duration.
     """
     captured = []
 
@@ -522,7 +528,12 @@ def test_task_completion_helpers_use_silent_kind():
     notifications.notify_vram_released()
     notifications.notify_vram_already_unloaded()
 
-    assert all(e.kind is notifications.EventKind.SILENT for e in captured)
+    # All task-completion events are SUCCESS or INFO, never ERROR.
+    for e in captured:
+        assert e.kind in (
+            notifications.EventKind.SUCCESS,
+            notifications.EventKind.INFO,
+        )
     assert [e.id for e in captured] == [
         "ocr.completed",
         "vram.released",
@@ -644,80 +655,65 @@ def test_notify_silent_helper():
     assert ev.id == "silent.notifications.silent_done"
 
 
-def test_silent_indicator_widget_creation(monkeypatch):
-    """The CustomBubbleBackend must be able to create a
-    SilentIndicator for a SILENT event without errors.
+def test_dbus_backend_uses_dbus_boolean_for_hints():
+    """The D-Bus backend must wrap boolean hint values with
+    ``dbus.Boolean`` because plain Python ``bool`` is not a valid
+    D-Bus variant on every binding.
     """
-    fake_qt = mock.MagicMock()
-    fake_qt.QApplication.instance.return_value = mock.MagicMock()
-    fake_qt.QApplication.instance.return_value.primaryScreen.return_value = None
-    for name in ("PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets"):
-        monkeypatch.setitem(sys.modules, name, fake_qt)
-    fake_qt.QApplication.instance.return_value._maiocr_event_loop_started = True
+    import maiocr.notifications as ns
 
-    backend = notifications.CustomBubbleBackend(duration_seconds=4)
-    assert backend.is_available()
+    captured = []
 
-    ev = notifications.Event(
-        id="silent",
-        kind=notifications.EventKind.SILENT,
-        title="Done",
-        body="Done",
+    def _capture(*args, **kwargs):
+        captured.append((args, kwargs))
+
+    # Inject a fake dbus module that satisfies both the
+    # ``import dbus`` and ``from dbus import SessionBus`` lookups.
+    fake_dbus = mock.MagicMock()
+    fake_dbus.Boolean.side_effect = lambda v: f"Boolean({v})"
+    fake_dbus.SessionBus.return_value.get_object.return_value = mock.MagicMock()
+    fake_dbus.Interface = lambda *a, **kw: mock.MagicMock(
+        Notify=_capture
     )
-    backend.show(ev)
+
+    with mock.patch.dict(sys.modules, {"dbus": fake_dbus, "dbus.mainloop": fake_dbus}):
+        backend = ns.DBusBackend()
+        ev = ns.Event(
+            id="x", kind=ns.EventKind.SILENT,
+            title="t", body="b",
+        )
+        backend.show(ev)
+    assert captured, "Notify was not called"
+    args, _ = captured[0]
+    hints = args[6]
+    # transient is wrapped via dbus.Boolean(1)
+    assert hints["transient"] == "Boolean(1)"
 
 
-def test_bubble_window_flags_use_window_not_tool():
-    """The bubble must use ``Qt.WindowType.Window`` and not
-    ``Qt.WindowType.Tool``: tool windows are hidden by some
-    Wayland compositors (niri, sway) and would never become
-    visible.  The exact set of window flags is part of the
-    Niri/Wayland compatibility contract.
+def test_notifications_module_creates_no_qt_window():
+    """The whole point of the redesign is that MaiOCR no longer
+    creates a Qt toplevel window for status notifications.  We
+    assert that the source of ``maiocr.notifications`` no longer
+    references ``QWidget`` / ``QDialog`` / ``QSystemTrayIcon`` —
+    if any of those classes are added back, the test will fail
+    and the maintainer will be reminded to keep the focus-free
+    contract intact.
     """
     import inspect
-    import re
     from maiocr import notifications
     src = inspect.getsource(notifications)
-    # Find each setWindowFlags(...) call and grab the full
-    # multi-line argument list.
-    blocks = re.findall(
-        r"self\.setWindowFlags\(\s*([^)]*?)\s*\)", src, re.DOTALL
-    )
-    assert blocks, "no self.setWindowFlags(...) call found"
-    for block in blocks:
-        assert "WindowType.Window" in block, (
-            f"setWindowFlags must include Qt.WindowType.Window: {block!r}"
+    # ``QWidget`` is a generic name that we want to forbid for the
+    # bubble classes — but we still use it internally for type
+    # annotations and abstract base.  The concrete toplevel window
+    # classes are ``QDialog`` and ``QSystemTrayIcon``.  Allow ``QWidget``
+    # but forbid the two real-window classes.
+    for forbidden in ("QDialog(", "QSystemTrayIcon("):
+        assert forbidden not in src, (
+            f"maiocr.notifications must not create {forbidden!r} — "
+            "this would create a new Wayland surface and steal focus "
+            "on Niri.  Use the freedesktop notification spec (D-Bus) "
+            "instead."
         )
-    # The bubble and silent-indicator both use Qt.WindowType.Window,
-    # so there should be at least two matches.
-    assert len(blocks) >= 2
-
-
-def test_bubble_position_is_clamped_to_screen():
-    """The natural bottom-right placement must always be inside
-    the available screen rectangle.
-    """
-    class _Rect:
-        def __init__(self, x, y, w, h):
-            self.x = x
-            self.y = y
-            self.w = w
-            self.h = h
-        def left(self): return self.x
-        def top(self): return self.y
-        def right(self): return self.x + self.w
-        def bottom(self): return self.y + self.h
-
-    geo = _Rect(0, 0, 3840, 2160)
-    widget_w, widget_h = 400, 200
-    margin = 24
-    x = geo.right() - widget_w - margin
-    y = geo.bottom() - widget_h - margin
-    # The natural placement should be on-screen.
-    assert x >= geo.left()
-    assert y >= geo.top()
-    assert x + widget_w <= geo.right() + 1
-    assert y + widget_h <= geo.bottom() + 1
 
 
 def test_dbus_backend_routes_silent_events_as_transient():

@@ -87,6 +87,12 @@ SYSTEM_PKGS=(
     libnotify
     desktop-file-utils
     xdg-utils
+    # mako is a tiny notification daemon that uses the Wayland
+    # layer-shell protocol to render pop-ups.  We install it as a
+    # fallback in case the user does not already have a notification
+    # daemon running (e.g. on a bare Niri session).  DankMaterialShell
+    # provides its own notifier so this is only used as a last resort.
+    mako
 )
 
 # Qt is only required for the system-tray icon; headless installs
@@ -198,22 +204,32 @@ fi
 log "Syncing python project (uv sync)"
 uv sync --extra dev --python "${SYSTEM_PY}"
 
-# Helper: link every PyQt6* directory + .dist-info from
+# Helper: link a Python package directory + .dist-info from
 # ${SYSTEM_SITE} into the given tool site-packages.  Idempotent.
-_link_pyqt6_into() {
-    local site_base="$1"
+_link_pkg_into() {
+    local site_base="$1" pkg_prefix="$2"
     [ -d "${site_base}" ] || return 1
     [ -n "${SYSTEM_SITE}" ] || return 1
     local pkg name
-    # Some PyQt6 builds split into PyQt6/, PyQt6_Qt6/, PyQt6_sip/ …
-    for pkg_dir in "${SYSTEM_SITE}"/PyQt6*; do
+    for pkg_dir in "${SYSTEM_SITE}"/${pkg_prefix}*; do
         [ -d "${pkg_dir}" ] || continue
         name="$(basename "${pkg_dir}")"
         # Always (re)create the symlink so a stale link is replaced.
         ln -sfn "${pkg_dir}" "${site_base}/${name}"
     done
-    # .dist-info is required for importlib.metadata.
-    for info in "${SYSTEM_SITE}"/PyQt6*.dist-info; do
+}
+
+# Backwards-compatible alias — used everywhere ``_link_pyqt6_into``
+# appeared.
+_link_pyqt6_into() { _link_pkg_into "$1" "PyQt6"; }
+
+
+# Helper: copy .dist-info directories for the given prefix.
+_link_distinfo_into() {
+    local site_base="$1" pkg_prefix="$2"
+    [ -d "${site_base}" ] || return 1
+    [ -n "${SYSTEM_SITE}" ] || return 1
+    for info in "${SYSTEM_SITE}"/${pkg_prefix}*.dist-info; do
         [ -d "${info}" ] || continue
         rm -rf "${site_base}/$(basename "${info}")" 2>/dev/null || true
         cp -r --no-preserve=ownership "${info}" "${site_base}/" 2>/dev/null || true
@@ -223,10 +239,14 @@ _link_pyqt6_into() {
 # Project venv: also link PyQt6 into ./.venv so ``pytest`` and
 # the developer's editor can use it.
 if [ -d ".venv" ] && [ -n "${SYSTEM_SITE}" ]; then
-    log "Linking system PyQt6 into the project venv"
-    _link_pyqt6_into "$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null)" \
-        && log "PyQt6 available in the project venv" \
-        || warn "could not link PyQt6 into the project venv"
+    log "Linking system PyQt6 and dbus into the project venv"
+    site_base="$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null)"
+    _link_pyqt6_into "${site_base}" \
+        && _link_distinfo_into "${site_base}" "PyQt6" \
+        && _link_pkg_into "${site_base}" "dbus" \
+        && _link_distinfo_into "${site_base}" "dbus" \
+        && log "PyQt6 + dbus available in the project venv" \
+        || warn "could not link PyQt6 / dbus into the project venv"
 fi
 
 # Tool install: pin to the system Python so the system PyQt6 lines
@@ -257,6 +277,7 @@ if [ -n "${SYSTEM_SITE}" ] && have maiocr-server; then
             if [ -d "${SITE_BASE}" ]; then
                 log "Linking system PyQt6 into tool venv (python ${v})"
                 if _link_pyqt6_into "${SITE_BASE}"; then
+                    _link_distinfo_into "${SITE_BASE}" "PyQt6"
                     if "${TOOL_PY}" -c "import PyQt6.QtWidgets" >/dev/null 2>&1; then
                         log "PyQt6 available in the maiocr tool venv (python ${v})"
                         break
@@ -266,6 +287,54 @@ if [ -n "${SYSTEM_SITE}" ] && have maiocr-server; then
         done
         if ! "${TOOL_PY}" -c "import PyQt6.QtWidgets" >/dev/null 2>&1; then
             warn "PyQt6 could not be linked into the maiocr tool venv; tray will run headless"
+        fi
+        # Same trick for dbus (the freedesktop notification spec
+        # backend needs it).  python-dbus is a standard Arch package.
+        for v in "${TOOL_VER}" "${PY_VER}"; do
+            SITE_BASE="$HOME/.local/share/uv/tools/maiocr/lib/python${v}/site-packages"
+            if [ -d "${SITE_BASE}" ]; then
+                log "Linking system dbus into tool venv (python ${v})"
+                # Replace any previous symlink/dir with a real
+                # directory we own, so we can put files in it.
+                if [ -L "${SITE_BASE}/dbus" ] || [ -d "${SITE_BASE}/dbus" ]; then
+                    rm -rf "${SITE_BASE}/dbus"
+                fi
+                mkdir -p "${SITE_BASE}/dbus/mainloop"
+                # Symlink every .py file from the system dbus package
+                # into our venv's dbus/ directory.
+                if [ -d "${SYSTEM_SITE}/dbus" ]; then
+                    for f in "${SYSTEM_SITE}"/dbus/*.py; do
+                        [ -f "$f" ] || continue
+                        ln -sf "$f" "${SITE_BASE}/dbus/$(basename "$f")"
+                    done
+                    for f in "${SYSTEM_SITE}"/dbus/mainloop/*.py; do
+                        [ -f "$f" ] || continue
+                        ln -sf "$f" "${SITE_BASE}/dbus/mainloop/$(basename "$f")"
+                    done
+                fi
+                # ``dbus/__init__.py`` and ``dbus/types.py`` both do
+                # ``from _dbus_bindings import ...`` which is an
+                # absolute import — the .so file must live in a
+                # directory on ``sys.path``.  Put symlinks directly
+                # in our site-packages/.
+                for so_file in "${SYSTEM_SITE}"/_dbus_bindings*.so \
+                                "${SYSTEM_SITE}"/_dbus_glib_bindings*.so; do
+                    [ -f "${so_file}" ] || continue
+                    name="$(basename "${so_file}")"
+                    target="${SITE_BASE}/${name}"
+                    [ -e "${target}" ] && rm -f "${target}"
+                    ln -sfn "${so_file}" "${target}"
+                done
+                # .dist-info.
+                _link_distinfo_into "${SITE_BASE}" "dbus"
+                if "${TOOL_PY}" -c "import dbus" >/dev/null 2>&1; then
+                    log "dbus available in the maiocr tool venv (python ${v})"
+                    break
+                fi
+            fi
+        done
+        if ! "${TOOL_PY}" -c "import dbus" >/dev/null 2>&1; then
+            warn "dbus could not be linked; D-Bus notifications unavailable"
         fi
     fi
 fi

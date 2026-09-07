@@ -51,10 +51,14 @@ class Settings:
     log_retention_days: int = 7
     prefer_gpu: bool = True
     notify_on_copy: bool = True
-    # "system" uses notify-send; "custom" uses the in-app PyQt6 bubble.
-    # The two modes are mutually exclusive: when the user picks
-    # "custom", the system notification backend is **not** invoked.
-    notification_mode: str = "system"
+    # "system" uses notify-send; "dbus" / "custom" use the
+    # freedesktop notification spec over D-Bus.  On Niri / Wayland
+    # "dbus" is the recommended mode because it never creates a
+    # MaiOCR Wayland surface — the bubble is rendered by the
+    # user's notification daemon (mako, dunst, the dms /
+    # quickshell built-in notifier, etc.) and never steals focus
+    # from the application the user is currently using.
+    notification_mode: str = "dbus"
     notification_duration: int = 4
     # Action identifiers for the tray icon's left and double click.
     # See ``maiocr.tray_actions.TRAY_ACTIONS`` for the full list.

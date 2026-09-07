@@ -620,11 +620,28 @@ def _try_qt_tray() -> int | None:
     # ------------------------------------------------------------------
     # Dialogs
     # ------------------------------------------------------------------
+    #
+    # All dialogs opened from the tray must be **non-focus-stealing**
+    # so that Niri does not move keyboard focus from the application
+    # the user is currently using.  ``WA_ShowWithoutActivating`` asks
+    # the window manager to show the window without raising or
+    # focusing it, and ``WindowDoesNotAcceptFocus`` means the window
+    # itself never accepts keyboard focus.
+
+    def _non_focus_stealing_flags():
+        return (
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
 
     def _info_dialog(title: str, body: str) -> None:
         dlg = QDialog()
         dlg.setWindowTitle(title)
         dlg.setWindowIcon(app_icon)
+        dlg.setWindowFlags(self._non_focus_stealing_flags())
+        dlg.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating, True
+        )
         dlg.resize(560, 420)
         layout = QVBoxLayout(dlg)
         view = QPlainTextEdit(dlg)
@@ -644,7 +661,8 @@ def _try_qt_tray() -> int | None:
         refresh_btn.clicked.connect(lambda: _refresh_then_redraw(dlg, view, title))
         buttons.addButton(refresh_btn, QDialogButtonBox.ButtonRole.ActionRole)
         layout.addWidget(buttons)
-        dlg.exec()
+        dlg.show()  # .show() not .exec() so we don't block + modal
+        dlg.raise_()
 
     def _refresh_then_redraw(dlg, view: QPlainTextEdit, title: str) -> None:
         if title == i18n.t("actions.service_status"):
@@ -821,15 +839,40 @@ def _try_qt_tray() -> int | None:
     # Preferences dialog
     # ------------------------------------------------------------------
     def open_preferences() -> None:
+        # ``dlg.exec()`` would block the tray's event loop and *also*
+        # makes the dialog modal, which on Niri focuses it.  Show
+        # the dialog non-modally so the tray can still update the
+        # status icon in the background.
         dlg = PreferencesDialog()
-        dlg.exec()
-        refresh()
+        dlg.show()
+        dlg.raise_()
+        # ``refresh`` is called from the dialog's ``_on_accept`` so
+        # the tray picks up the new settings immediately on Save.
+        # We also force a refresh now in case the user just closes
+        # the dialog.
+        def _on_close():
+            try:
+                refresh()
+            except Exception:
+                pass
+        dlg.finished.connect(_on_close)
 
     class PreferencesDialog(QDialog):
         def __init__(self, parent: Optional[QWidget] = None) -> None:
             super().__init__(parent)
             self.setWindowTitle(i18n.t("actions.preferences"))
             self.setWindowIcon(app_icon)
+            # Non-focus-stealing: when the user clicks "Preferences"
+            # in the tray menu the dialog should appear without
+            # stealing keyboard focus from whatever the user is
+            # currently using.
+            self.setWindowFlags(
+                Qt.WindowType.Window
+                | Qt.WindowType.WindowDoesNotAcceptFocus
+            )
+            self.setAttribute(
+                Qt.WidgetAttribute.WA_ShowWithoutActivating, True
+            )
             self.resize(440, 320)
             layout = QFormLayout(self)
 
@@ -1022,8 +1065,7 @@ def _try_qt_tray() -> int | None:
     timer.timeout.connect(refresh)
     timer.start()
     refresh()
-    notifications._mark_event_loop_started()
-    notifications.reinit()  # pick up the Qt event-loop flag
+    notifications.reinit()  # pick the right backend for the mode
 
     def handle_signal(*_):
         app.quit()

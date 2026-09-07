@@ -1,14 +1,20 @@
-"""Backwards-compat shim.
+"""Backwards-compat shim for ``maiocr.notify``.
 
-The notification subsystem now lives in :mod:`maiocr.notifications`
-(this module is the deprecated public name). Existing callers do
-``from maiocr import notify`` and then ``notify.notify(message)`` —
-we keep that working by re-exporting the same surface.
+The notification subsystem now lives in
+:mod:`maiocr.notifications`; this module re-exports the public
+surface for code that does ``from maiocr import notify`` and then
+``notify.notify_ocr_completed(...)``, ``notify.notify(message)``,
+etc.
+
+The tray and CLI dispatch every notification through the manager
+(``maiocr.notifications.get_manager``); the active backend is
+selected by the ``notification_mode`` setting and never creates a
+new Qt toplevel window on Niri / Wayland.
 """
 from __future__ import annotations
 
 from maiocr.notifications import (  # noqa: F401
-    CustomBubbleBackend,
+    Backend,
     DBusBackend,
     Event,
     EventKind,
@@ -29,5 +35,9 @@ from maiocr.notifications import (  # noqa: F401
     notify_vram_already_unloaded,
     notify_vram_released,
     reinit,
+    request_ocr_completed,
+    request_vram_already_unloaded,
+    request_vram_released,
     reset_for_tests,
+    send_request,
 )

@@ -259,55 +259,62 @@ it.  The two notification modes are mutually exclusive: the
 
 | Mode                       | What you see                                                                                  |
 |----------------------------|-----------------------------------------------------------------------------------------------|
-| **System Notification**     | A native desktop notification via `notify-send` / the freedesktop notification spec.       |
-| **Custom Notification Bubble** | MaiOCR's own `QWidget` bubble drawn in the bottom-right corner of the screen.                |
+| **Standard Notification** (D-Bus, default) | A native desktop notification via the freedesktop notification spec over D-Bus.  Rendered by the user's notification daemon (mako, dunst, fnott, the dms / quickshell built-in notifier, etc.). |
+| **System Notification**    | A native desktop notification via `notify-send`.  The fallback if D-Bus is not reachable.  |
 
-### Custom Notification Bubble (Niri / Wayland)
+The previous "Custom Notification Bubble" mode has been folded into
+the Standard Notification mode: a "custom" notification on Niri is
+just a well-formed D-Bus notification rendered by the user's
+notification daemon.  ``notification_mode`` accepts ``"dbus"``
+(alias: ``"custom"``) and ``"system"``; both are non-focus-stealing
+and never create a MaiOCR Wayland surface.
 
-The bubble is a real ``QWidget`` window using
-``Qt.WindowType.Window | WindowStaysOnTopHint | FramelessWindowHint``.
-We deliberately avoid ``Qt.WindowType.Tool`` because the Niri and
-Sway Wayland compositors hide tool windows by default — the bubble
-would never become visible.  With ``Qt.WindowType.Window`` Niri
-renders it like any other application window.
+### Why no QWidget bubble on Niri
 
-The bubble's position is clamped to the screen that contains the
-tray icon, so a multi-monitor setup with negative coordinates
-still works correctly.
+Earlier versions of MaiOCR drew a custom ``QWidget`` for the
+"custom bubble" mode.  This was abandoned for two reasons:
 
-Because the CLI process (``maiocr start`` / ``maiocr run``) does
-not own a Qt event loop, MaiOCR uses a tiny **IPC channel** for
-custom-bubble notifications:
+1.  Creating a new ``wl_shell_surface`` makes Niri move focus to
+    the new window, which is disruptive.  The standard Wayland
+    pattern is to use the **freedesktop notification spec**
+    (``org.freedesktop.Notifications``) which renders the bubble
+    via a layer-shell overlay drawn by the notification daemon —
+    no focus change for the user.
+2.  Niri's compositor handles SNI / layer-shell correctly.  Other
+    Wayland compositors (sway, hyprland, river) all support the
+    same D-Bus spec, so this is the most portable approach.
 
-1. The CLI writes a JSON file to
-   ``$XDG_RUNTIME_DIR/maiocr/notifications/``.
-2. The tray process polls that directory on every refresh
-   (~2 s).
-3. When a new file is found, the tray shows the bubble and
-   deletes the file.
+The tray icon itself is still a ``QSystemTrayIcon`` (SNI protocol)
+— that is the standard Wayland tray mechanism and does not create
+a new MaiOCR window either: the SNI host draws the icon in its
+reserved area.
 
-This way the bubble appears within ~2 s of the user running
-``maiocr start`` or completing an OCR, even though the event was
-generated in a different process.  No ``notify-send``, no
-``libnotify``, no SNI message API — nothing enters the system
-notification history.
+OCR capture uses ``slurp`` + ``grim`` — external Wayland tools
+that already use the layer-shell protocol themselves, so the
+region-selection overlay is not a MaiOCR window either.
 
-The bubble's `WA_TranslucentBackground` attribute is honoured by
-Niri via the ``xdg-shell`` alpha protocol.  The fade-in animation
-uses Qt's ``windowOpacity`` property; on compositors that don't
-support the alpha-blended animation the bubble is shown at full
-opacity (the warning ``This plugin does not support setting window
-opacity`` in the journal is harmless).
+### Notification duration
 
-### System Notification
+Configure the bubble display time in **Preferences → Bubble
+display duration** (or via the CLI:
 
-In system mode, notifications are sent via ``notify-send`` with
-the ``-a MaiOCR -u <urgency> -h x-canonical-private-synchronous:maiocr``
-hints, so the system notification daemon groups them under MaiOCR.
+```bash
+maiocr settings set notification_duration=8
+```
 
-Task-completion events (OCR done, VRAM released) are sent with
-``-h int:transient:1`` so they appear briefly and are **not**
-added to the persistent notification history.
+The value is in seconds (1 – 60) and is persisted in
+``settings.yml``.  Silent task-completion indicators are
+transient (do not enter the persistent notification history)
+regardless of this setting.
+
+### Service Status / GPU Information / Preferences dialogs
+
+All three dialogs opened from the tray use
+``Qt.WindowType.WindowDoesNotAcceptFocus`` plus
+``WA_ShowWithoutActivating``, so opening them does not steal
+keyboard focus from the application the user is currently using.
+They are non-modal (``dlg.show()`` rather than ``dlg.exec()``) so
+the tray can keep updating the status icon while a dialog is open.
 
 ### Notification duration
 
