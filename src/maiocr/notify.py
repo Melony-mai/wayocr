@@ -1,38 +1,33 @@
-"""Desktop notification helper (localized)."""
+"""Backwards-compat shim.
+
+The notification subsystem now lives in :mod:`maiocr.notifications`
+(this module is the deprecated public name). Existing callers do
+``from maiocr import notify`` and then ``notify.notify(message)`` —
+we keep that working by re-exporting the same surface.
+"""
 from __future__ import annotations
 
-import platform
-import shutil
-import subprocess
-
-from maiocr import i18n
-
-
-def notify(message: str, title: str | None = None) -> None:
-    """Show a desktop notification.
-
-    ``title`` defaults to the localised "MaiOCR" app name.
-    """
-    if title is None:
-        title = i18n.t("app.name")
-    system = platform.system()
-
-    if system == "Windows":
-        try:
-            from win10toast import ToastNotifier  # type: ignore
-
-            ToastNotifier().show_toast(title, message, duration=3)
-        except Exception:
-            print(f"[{title}] {message}")
-        return
-
-    if shutil.which("notify-send"):
-        subprocess.run(["notify-send", title, message])
-        return
-
-    print(f"[{title}] {message}")
-
-
-if __name__ == "__main__":  # pragma: no cover
-    import sys
-    notify(sys.argv[1] if len(sys.argv) > 1 else i18n.t("app.about"))
+from maiocr.notifications import (  # noqa: F401
+    CustomBubbleBackend,
+    DBusBackend,
+    Event,
+    EventKind,
+    Manager,
+    NullBackend,
+    SystemBackend,
+    get_manager,
+    initialise,
+    notify,
+    notify_custom,
+    notify_error,
+    notify_ocr_completed,
+    notify_ocr_empty,
+    notify_service_restarted,
+    notify_service_started,
+    notify_service_stopped,
+    notify_silent,
+    notify_vram_already_unloaded,
+    notify_vram_released,
+    reinit,
+    reset_for_tests,
+)

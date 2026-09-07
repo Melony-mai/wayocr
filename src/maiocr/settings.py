@@ -51,6 +51,15 @@ class Settings:
     log_retention_days: int = 7
     prefer_gpu: bool = True
     notify_on_copy: bool = True
+    # "system" uses notify-send; "custom" uses the in-app PyQt6 bubble.
+    # The two modes are mutually exclusive: when the user picks
+    # "custom", the system notification backend is **not** invoked.
+    notification_mode: str = "system"
+    notification_duration: int = 4
+    # Action identifiers for the tray icon's left and double click.
+    # See ``maiocr.tray_actions.TRAY_ACTIONS`` for the full list.
+    click_action_left: str = "release_vram"
+    click_action_double: str = "run_ocr"
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":

@@ -32,7 +32,9 @@ Unix-domain socket.
   Japanese, English, and mixed.
 - **System-tray indicator** — a Niri / DankMaterialShell-friendly
   SNI tray icon with right-click actions (Release VRAM, Restart,
-  Start, Stop, Service status, GPU info, Preferences, Quit).
+  Start, Stop, Service status, GPU info, Run OCR, Preferences, Quit).
+  Left-click and double-click actions are configurable from
+  Preferences.
 - **Live status file** at `$XDG_RUNTIME_DIR/maiocr/status.json` that
   DMS Quickshell widgets can poll.
 - **English / 简体中文 UI** — switch at any time with
@@ -80,11 +82,12 @@ Required tools (installed automatically):
 
 Optional, but recommended for the tray icon:
 
-| Tool           | Used for                |
-|----------------|-------------------------|
-| `qt6-base`     | Qt 6 runtime            |
-| `qt6-wayland`  | Qt-on-Wayland plugin    |
-| `python-pyqt6` | Python bindings for Qt6 |
+| Tool            | Used for                                                  |
+|-----------------|-----------------------------------------------------------|
+| `qt6-base`      | Qt 6 runtime                                              |
+| `qt6-wayland`   | Qt-on-Wayland plugin                                      |
+| `python-pyqt6`  | Python bindings for Qt6 (must match the tool's Python)     |
+| `python-dbus`   | Optional. Enables the D-Bus notification backend fallback. |
 
 ## Installation
 
@@ -169,12 +172,14 @@ systemctl --user disable MaiOCR.service
 CLI shortcuts:
 
 ```bash
-maiocr start
-maiocr stop
-maiocr restart
+maiocr start                  # start (or restart) the server and tray
+maiocr stop                   # stop the server and tray
+maiocr restart                # restart the server and tray
 maiocr status
 maiocr ping
 maiocr logs -f
+maiocr refresh-tray           # restart just the tray (picks up new binary)
+maiocr repair                 # re-link system PyQt6 + restart the tray
 ```
 
 ### Release VRAM
@@ -231,6 +236,7 @@ icon shows the current state via a coloured dot:
 
 Right-click menu:
 
+- **Run OCR screenshot** (spawns the capture dialog)
 - **Release VRAM**
 - **Restart MaiOCR**
 - **Start MaiOCR**
@@ -242,6 +248,111 @@ Right-click menu:
 
 The tray reads the icon from the system data directory and falls back
 to a generated icon if the file is missing.
+
+## Notifications
+
+MaiOCR has a clean event / backend / manager architecture.  Every
+notification is built as a logical ``Event`` (id, kind, title,
+body) and the **single** active backend is responsible for rendering
+it.  The two notification modes are mutually exclusive: the
+**non-active** backends are never invoked.
+
+| Mode                       | What you see                                                                                  |
+|----------------------------|-----------------------------------------------------------------------------------------------|
+| **System Notification**     | A native desktop notification via `notify-send` / the freedesktop notification spec.       |
+| **Custom Notification Bubble** | MaiOCR's own `QWidget` bubble drawn in the bottom-right corner of the screen.                |
+
+### Custom Notification Bubble (Niri / Wayland)
+
+The bubble is a real ``QWidget`` window using
+``Qt.WindowType.Window | WindowStaysOnTopHint | FramelessWindowHint``.
+We deliberately avoid ``Qt.WindowType.Tool`` because the Niri and
+Sway Wayland compositors hide tool windows by default — the bubble
+would never become visible.  With ``Qt.WindowType.Window`` Niri
+renders it like any other application window.
+
+The bubble's position is clamped to the screen that contains the
+tray icon, so a multi-monitor setup with negative coordinates
+still works correctly.
+
+Because the CLI process (``maiocr start`` / ``maiocr run``) does
+not own a Qt event loop, MaiOCR uses a tiny **IPC channel** for
+custom-bubble notifications:
+
+1. The CLI writes a JSON file to
+   ``$XDG_RUNTIME_DIR/maiocr/notifications/``.
+2. The tray process polls that directory on every refresh
+   (~2 s).
+3. When a new file is found, the tray shows the bubble and
+   deletes the file.
+
+This way the bubble appears within ~2 s of the user running
+``maiocr start`` or completing an OCR, even though the event was
+generated in a different process.  No ``notify-send``, no
+``libnotify``, no SNI message API — nothing enters the system
+notification history.
+
+The bubble's `WA_TranslucentBackground` attribute is honoured by
+Niri via the ``xdg-shell`` alpha protocol.  The fade-in animation
+uses Qt's ``windowOpacity`` property; on compositors that don't
+support the alpha-blended animation the bubble is shown at full
+opacity (the warning ``This plugin does not support setting window
+opacity`` in the journal is harmless).
+
+### System Notification
+
+In system mode, notifications are sent via ``notify-send`` with
+the ``-a MaiOCR -u <urgency> -h x-canonical-private-synchronous:maiocr``
+hints, so the system notification daemon groups them under MaiOCR.
+
+Task-completion events (OCR done, VRAM released) are sent with
+``-h int:transient:1`` so they appear briefly and are **not**
+added to the persistent notification history.
+
+### Notification duration
+
+Configure the bubble display time in **Preferences → Bubble
+display duration** (or via the CLI:
+
+```bash
+maiocr settings set notification_duration=8
+```
+
+The value is in seconds (1 – 60) and is persisted in
+``settings.yml``.  The silent task-completion indicator is
+always brief (~1.2 – 4 s) and is not affected by this setting.
+
+### Click actions
+
+Left-click and double-click on the tray icon are independently
+configurable from Preferences. Available actions:
+
+| ID             | Action                                  |
+|----------------|-----------------------------------------|
+| `none`         | Do nothing                              |
+| `release_vram` | Drop the OCR engine, free VRAM          |
+| `run_ocr`      | Open the OCR screenshot capture dialog  |
+| `show_status`  | Show the Service status dialog         |
+| `show_gpu`     | Show the GPU information dialog         |
+| `restart`      | Restart MaiOCR (server + tray)          |
+| `preferences`  | Open the preferences dialog             |
+| `quit`         | Exit the tray process                   |
+
+Defaults: left-click = `release_vram`, double-click = `run_ocr`.
+Single-click and double-click are disambiguated by a 250 ms
+timeout — a true double-click does not also fire the single-click
+action.
+
+Change the action from the CLI:
+
+```bash
+maiocr settings set click_action_left=run_ocr
+maiocr settings set click_action_double=release_vram
+```
+
+The setting is persisted in `settings.yml` and takes effect the
+next time the tray reads it (no restart required — the tray
+re-reads the value on every click).
 
 ## File locations
 
@@ -288,6 +399,34 @@ pacman -S python-pyqt6
 # rerun the installer to re-link PyQt6 into the tool venv
 ./scripts/install-arch.sh
 ```
+
+You can also force a re-link with the new `maiocr repair` command:
+
+```bash
+maiocr repair
+```
+
+### Custom Notification Bubble does not appear
+
+1. Make sure the bubble backend is actually selected:
+   ```bash
+   maiocr settings set notification_mode=custom
+   maiocr restart
+   journalctl --user -u MaiOCR-tray.service -n 30 | grep -i "bubble\|backend"
+   ```
+2. Check that the tray process loaded PyQt6:
+   ```bash
+   ls /proc/$(pgrep -f maiocr-tray | head -1)/maps | grep -i "libQt6Widgets"
+   ```
+3. The bubble should appear in the bottom-right corner of the
+   primary screen within ~2 s of any state change (``maiocr start``
+   / ``stop`` / ``restart``).  On Niri / Sway the bubble is a real
+   top-level window — make sure no compositor rule is hiding it.
+4. If the bubble still does not appear, check the journal for
+   errors.  The harmless message
+   ``This plugin does not support setting window opacity`` is just
+   a warning that the fade-in animation could not run; the bubble
+   itself is shown at full opacity.
 
 ### `maiocr gpu-info` reports CPU only
 

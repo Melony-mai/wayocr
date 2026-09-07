@@ -47,6 +47,11 @@ actions:
   save: "Save"
 
 notifications:
+  title:
+    service: "MaiOCR service"
+    ocr: "MaiOCR OCR"
+    gpu: "MaiOCR GPU"
+    error: "MaiOCR error"
   copied: "Copied {n} characters to clipboard"
   no_text: "No text detected"
   error: "OCR error: {error}"
@@ -55,6 +60,12 @@ notifications:
   started: "MaiOCR started"
   stopped: "MaiOCR stopped"
   restarted: "MaiOCR restarted"
+  # Silent indicator text (rendered as a small unobtrusive pill in
+  # the bottom-right corner of the screen).
+  silent_done: "Done"
+  silent_vram_released: "VRAM released"
+  silent_ocr_done: "OCR · {n} chars"
+  silent_nothing_to_release: "Already idle"
 
 tray:
   tooltip_running: "MaiOCR - {state}"
@@ -75,7 +86,7 @@ settings:
   prefer_gpu: "Prefer NVIDIA GPU when available"
   prefer_gpu_help: "Use the CUDA execution provider when a compatible GPU is detected."
   notify_on_copy: "Notify after copying OCR result"
-  notify_on_copy_help: "Show a desktop notification when OCR text is copied to the clipboard."
+  notify_on_copy_help: "Show a notification when OCR text is copied to the clipboard."
   log_level: "Log level"
   log_level_help: "How verbose MaiOCR's log output should be."
   log_max_size: "Log file size limit"
@@ -84,6 +95,24 @@ settings:
   log_backup_count_help: "Older backups are deleted after the retention period."
   log_retention_days: "Log retention (days)"
   log_retention_days_help: "Rotated backup logs older than this are deleted."
+  notification_mode: "Notification mode"
+  notification_mode_help: "Choose how MaiOCR notifies you. Custom bubble and system notification are mutually exclusive."
+  notification_mode_system: "System notification (notify-send)"
+  notification_mode_custom: "Custom notification bubble"
+  notification_duration: "Bubble display duration (seconds)"
+  notification_duration_help: "How long the custom notification bubble stays visible."
+  click_action_left: "Left-click action"
+  click_action_left_help: "What happens when you single-click the tray icon."
+  click_action_double: "Double-click action"
+  click_action_double_help: "What happens when you double-click the tray icon."
+  click_action_none: "Do nothing"
+  click_action_release_vram: "Release VRAM"
+  click_action_run_ocr: "Run OCR screenshot"
+  click_action_show_status: "Show service status"
+  click_action_show_gpu: "Show GPU information"
+  click_action_restart: "Restart MaiOCR"
+  click_action_preferences: "Open preferences"
+  click_action_quit: "Exit MaiOCR"
 
 errors:
   image_not_found: "Image not found: {path}"

@@ -47,6 +47,11 @@ actions:
   save: "保存"
 
 notifications:
+  title:
+    service: "MaiOCR 服务"
+    ocr: "MaiOCR 识别"
+    gpu: "MaiOCR 显卡"
+    error: "MaiOCR 错误"
   copied: "已将 {n} 个字符复制到剪贴板"
   no_text: "未检测到文字"
   error: "OCR 错误：{error}"
@@ -55,6 +60,12 @@ notifications:
   started: "MaiOCR 已启动"
   stopped: "MaiOCR 已停止"
   restarted: "MaiOCR 已重启"
+  # Silent indicator text (rendered as a small unobtrusive pill in
+  # the bottom-right corner of the screen).
+  silent_done: "完成"
+  silent_vram_released: "已释放显存"
+  silent_ocr_done: "识别完成 · {n} 字符"
+  silent_nothing_to_release: "引擎已空闲"
 
 tray:
   tooltip_running: "MaiOCR - {state}"
@@ -75,7 +86,7 @@ settings:
   prefer_gpu: "可用时优先使用 NVIDIA GPU"
   prefer_gpu_help: "检测到兼容 GPU 时使用 CUDA 执行提供程序。"
   notify_on_copy: "复制 OCR 结果后通知"
-  notify_on_copy_help: "将 OCR 文本复制到剪贴板后显示桌面通知。"
+  notify_on_copy_help: "将 OCR 文本复制到剪贴板后显示通知。"
   log_level: "日志级别"
   log_level_help: "控制 MaiOCR 日志输出的详细程度。"
   log_max_size: "日志文件大小上限"
@@ -84,6 +95,24 @@ settings:
   log_backup_count_help: "超出保留时间的旧备份将被删除。"
   log_retention_days: "日志保留天数"
   log_retention_days_help: "保留此天数之内的轮转日志。"
+  notification_mode: "通知方式"
+  notification_mode_help: "选择 MaiOCR 的通知方式。气泡通知和系统通知互斥。"
+  notification_mode_system: "系统通知（notify-send）"
+  notification_mode_custom: "自定义通知气泡"
+  notification_duration: "气泡显示时长（秒）"
+  notification_duration_help: "自定义通知气泡的停留时间。"
+  click_action_left: "左键操作"
+  click_action_left_help: "单击托盘图标时执行的操作。"
+  click_action_double: "双击操作"
+  click_action_double_help: "双击托盘图标时执行的操作。"
+  click_action_none: "无操作"
+  click_action_release_vram: "释放显存"
+  click_action_run_ocr: "打开 OCR 截图"
+  click_action_show_status: "查看服务状态"
+  click_action_show_gpu: "查看 GPU 信息"
+  click_action_restart: "重启 MaiOCR"
+  click_action_preferences: "打开首选项"
+  click_action_quit: "退出 MaiOCR"
 
 errors:
   image_not_found: "找不到图片：{path}"

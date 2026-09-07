@@ -137,101 +137,136 @@ fi
 
 cd "${PROJECT_DIR}"
 
-# Prefer the system Python so the Arch-packaged python-pyqt6 lines up
-# with the tool's interpreter. uv picks a python per the project's
-# .python-version when one exists.
-SYSTEM_PY="$(command -v python3 || true)"
+# Pin the tool's Python interpreter to the same Python that owns the
+# Arch-packaged ``python-pyqt6`` (currently 3.14).  If we let uv pick
+# its own version (e.g. an older 3.12 cache) the system PyQt6 cannot
+# be linked into the tool venv and the tray falls back to headless
+# mode.  This is the single most common cause of "the tray icon
+# disappeared" reports after a re-install.
+SYSTEM_PY=""
+for candidate in \
+    "/usr/bin/python3" \
+    "/usr/sbin/python3" \
+    "$(command -v python3 2>/dev/null || true)"
+do
+    if [ -x "${candidate}" ] && "${candidate}" -c "import PyQt6" >/dev/null 2>&1; then
+        SYSTEM_PY="${candidate}"
+        break
+    fi
+done
+# Last resort: fall back to whatever ``python3`` points to, even
+# without PyQt6.  The post-install link step will warn.
+if [ -z "${SYSTEM_PY}" ]; then
+    SYSTEM_PY="$(command -v python3 2>/dev/null || true)"
+fi
 if [ -n "${SYSTEM_PY}" ]; then
     log "Using system Python: ${SYSTEM_PY}"
     export UV_PYTHON="${SYSTEM_PY}"
+else
+    warn "no system Python found; tray will run headless"
 fi
 
-log "Syncing python project (uv sync)"
-uv sync --extra dev
-
-# Detect the python version that uv created
-PY_VER="$(.venv/bin/python -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")' 2>/dev/null || true)"
+# Detect the system Python version the tool will use.  We rely on
+# this when linking PyQt6 into the tool venv.
+PY_VER="$("${SYSTEM_PY}" -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")' 2>/dev/null || true)"
 if [ -z "${PY_VER}" ]; then
     PY_VER="$(ls -1 .venv/bin/python* 2>/dev/null | head -1 | sed 's@.*/python@@')"
 fi
-# Strip non-numeric prefix (e.g. "3.14" -> "3.14", "3" -> "3")
 PY_VER="$(echo "${PY_VER}" | grep -oE '^[0-9]+\.[0-9]+' || echo "${PY_VER}")"
 log "Detected python ${PY_VER}"
 
-# Make the system Qt6 / PyQt6 available to the uv tool's venv.
-# The Arch package ``python-pyqt6`` installs into the system Python's
-# site-packages, but ``uv tool install`` creates a private venv. We
-# link the relevant files into the tool's site-packages so the tray
-# icon works.
+# Locate the system site-packages that contains PyQt6.
 SYSTEM_SITE=""
 for candidate in \
     "/usr/lib/python${PY_VER}/site-packages" \
-    "$(python3 -c 'import sysconfig, os; print(sysconfig.get_paths("purelib"))' 2>/dev/null)"
+    "$(python3 -c 'import sysconfig, os; print(sysconfig.get_paths("purelib"))' 2>/dev/null)" \
+    "${SYSTEM_PY:+$(dirname "${SYSTEM_PY}")/../lib/python${PY_VER}/site-packages}"
 do
     if [ -d "${candidate}" ] && [ -d "${candidate}/PyQt6" ]; then
         SYSTEM_SITE="${candidate}"
         break
     fi
 done
-
-if have maiocr-server && [ -n "${SYSTEM_SITE}" ]; then
-    TOOL_PY="$HOME/.local/share/uv/tools/maiocr/bin/python"
-    SITE_BASE="$HOME/.local/share/uv/tools/maiocr/lib/python${PY_VER}/site-packages"
-    if [ -x "${TOOL_PY}" ] && [ -d "${SITE_BASE}" ]; then
-        log "Linking system PyQt6 into the maiocr tool venv"
-        # The system site may split a single PyQt6 across multiple
-        # .dist-info dirs; copy/symlink each top-level package.
-        for pkg_dir in "${SYSTEM_SITE}"/PyQt6*; do
-            [ -d "$pkg_dir" ] || continue
-            name="$(basename "$pkg_dir")"
-            if [ ! -e "${SITE_BASE}/${name}" ]; then
-                ln -sfn "$pkg_dir" "${SITE_BASE}/${name}" 2>/dev/null || true
-            fi
-        done
-        # Copy .dist-info for importlib.metadata
-        for info in "${SYSTEM_SITE}"/PyQt6*.dist-info; do
-            [ -d "$info" ] || continue
-            cp -r --no-preserve=ownership "$info" "${SITE_BASE}/" 2>/dev/null || true
-        done
-        if "${TOOL_PY}" -c "import PyQt6.QtWidgets" 2>/dev/null; then
-            log "PyQt6 available in the maiocr tool venv"
-        else
-            warn "PyQt6 could not be linked; tray will run headless"
-        fi
-    fi
+if [ -z "${SYSTEM_SITE}" ]; then
+    warn "could not find a site-packages with PyQt6 for Python ${PY_VER}"
+    warn "the system tray will fall back to headless mode"
 fi
 
-# uv tool install: this makes the `maiocr*` commands available in
-# ``$HOME/.local/bin`` (no venv activation required).  We pin the
-# Python to the system interpreter so the system-packaged PyQt6
-# is importable from the tool venv.
+# uv sync creates the project venv (used for tests / IDE work).
+# We force the same Python the tool will use, so the tool venv
+# matches the project venv and PyQt6 can be linked into both.
+log "Syncing python project (uv sync)"
+uv sync --extra dev --python "${SYSTEM_PY}"
+
+# Helper: link every PyQt6* directory + .dist-info from
+# ${SYSTEM_SITE} into the given tool site-packages.  Idempotent.
+_link_pyqt6_into() {
+    local site_base="$1"
+    [ -d "${site_base}" ] || return 1
+    [ -n "${SYSTEM_SITE}" ] || return 1
+    local pkg name
+    # Some PyQt6 builds split into PyQt6/, PyQt6_Qt6/, PyQt6_sip/ …
+    for pkg_dir in "${SYSTEM_SITE}"/PyQt6*; do
+        [ -d "${pkg_dir}" ] || continue
+        name="$(basename "${pkg_dir}")"
+        # Always (re)create the symlink so a stale link is replaced.
+        ln -sfn "${pkg_dir}" "${site_base}/${name}"
+    done
+    # .dist-info is required for importlib.metadata.
+    for info in "${SYSTEM_SITE}"/PyQt6*.dist-info; do
+        [ -d "${info}" ] || continue
+        rm -rf "${site_base}/$(basename "${info}")" 2>/dev/null || true
+        cp -r --no-preserve=ownership "${info}" "${site_base}/" 2>/dev/null || true
+    done
+}
+
+# Project venv: also link PyQt6 into ./.venv so ``pytest`` and
+# the developer's editor can use it.
+if [ -d ".venv" ] && [ -n "${SYSTEM_SITE}" ]; then
+    log "Linking system PyQt6 into the project venv"
+    _link_pyqt6_into "$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null)" \
+        && log "PyQt6 available in the project venv" \
+        || warn "could not link PyQt6 into the project venv"
+fi
+
+# Tool install: pin to the system Python so the system PyQt6 lines
+# up with the tool's interpreter.  --force recreates the venv.
 log "Installing maiocr console scripts"
 if have maiocr; then
     uv tool uninstall maiocr >/dev/null 2>&1 || true
 fi
 TOOL_PY_ARG=()
-if [ -n "${SYSTEM_PY:-}" ]; then
+if [ -n "${SYSTEM_PY}" ]; then
     TOOL_PY_ARG=(--python "${SYSTEM_PY}")
 fi
 uv tool install --force "${TOOL_PY_ARG[@]}" .
 
-# Re-link PyQt6 because `uv tool install --force` recreates the venv.
-if have maiocr-server && [ -n "${SYSTEM_SITE}" ]; then
+# Re-link PyQt6 into the freshly-recreated tool venv.  This MUST
+# happen *after* ``uv tool install --force`` because that command
+# wipes the tool's site-packages.  We loop over both possible
+# Python versions (PY_VER, plus the system Python) so we are
+# robust against uv picking a different interpreter than we asked
+# for.
+if [ -n "${SYSTEM_SITE}" ] && have maiocr-server; then
     TOOL_PY="$HOME/.local/share/uv/tools/maiocr/bin/python"
-    SITE_BASE="$HOME/.local/share/uv/tools/maiocr/lib/python${PY_VER}/site-packages"
-    if [ -x "${TOOL_PY}" ] && [ -d "${SITE_BASE}" ]; then
-        log "Re-linking system PyQt6 into the new tool venv"
-        for pkg_dir in "${SYSTEM_SITE}"/PyQt6*; do
-            [ -d "$pkg_dir" ] || continue
-            name="$(basename "$pkg_dir")"
-            if [ ! -e "${SITE_BASE}/${name}" ]; then
-                ln -sfn "$pkg_dir" "${SITE_BASE}/${name}" 2>/dev/null || true
+    if [ -x "${TOOL_PY}" ]; then
+        TOOL_VER="$("${TOOL_PY}" -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")' 2>/dev/null || true)"
+        # Build the list of possible site base directories to try.
+        for v in "${TOOL_VER}" "${PY_VER}"; do
+            SITE_BASE="$HOME/.local/share/uv/tools/maiocr/lib/python${v}/site-packages"
+            if [ -d "${SITE_BASE}" ]; then
+                log "Linking system PyQt6 into tool venv (python ${v})"
+                if _link_pyqt6_into "${SITE_BASE}"; then
+                    if "${TOOL_PY}" -c "import PyQt6.QtWidgets" >/dev/null 2>&1; then
+                        log "PyQt6 available in the maiocr tool venv (python ${v})"
+                        break
+                    fi
+                fi
             fi
         done
-        for info in "${SYSTEM_SITE}"/PyQt6*.dist-info; do
-            [ -d "$info" ] || continue
-            cp -r --no-preserve=ownership "$info" "${SITE_BASE}/" 2>/dev/null || true
-        done
+        if ! "${TOOL_PY}" -c "import PyQt6.QtWidgets" >/dev/null 2>&1; then
+            warn "PyQt6 could not be linked into the maiocr tool venv; tray will run headless"
+        fi
     fi
 fi
 

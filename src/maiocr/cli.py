@@ -30,11 +30,17 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from maiocr import client, gpu, i18n, notify, settings as settings_mod
+from maiocr import client, gpu, i18n, notifications, settings as settings_mod
+# notify is the legacy shim; prefer the new ``notifications`` module
+# for high-level helpers (notify_service_started, notify_ocr_completed,
+# …). ``notify.notify`` still works for one-off messages.
+from maiocr import notify  # noqa: E402
 
 
 SERVICE = "MaiOCR.service"
 SERVICE_FALLBACK = "maiocr.service"
+TRAY_SERVICE = "MaiOCR-tray.service"
+TRAY_SERVICE_FALLBACK = "maiocr-tray.service"
 OLD_SERVICE = "wayocr-server.service"
 
 
@@ -63,25 +69,242 @@ def _service_name() -> str:
     ).exists() else SERVICE_FALLBACK
 
 
+def _tray_service_name() -> str:
+    return TRAY_SERVICE if Path.home().joinpath(
+        ".config/systemd/user", TRAY_SERVICE
+    ).exists() else TRAY_SERVICE_FALLBACK
+
+
+def _tray_unit_installed() -> bool:
+    """Return True if the tray unit file is present in the user
+    systemd directory. The tray is a separate process and is
+    optional — we only start/restart it when its unit file exists.
+    """
+    home = Path.home() / ".config/systemd/user"
+    return (home / TRAY_SERVICE).exists() or (home / TRAY_SERVICE_FALLBACK).exists()
+
+
 def _print(line: str) -> None:
     print(line)
 
 
 def cmd_start(_args) -> int:
+    # Start the server first so the tray can connect to it.
     _systemctl(["start", _service_name()])
-    notify.notify(i18n.t("notifications.started"))
+    # Always restart the tray. ``systemctl start`` is a no-op when
+    # the unit is already active, but we want the tray to pick up
+    # any binary that was updated since the last start. The tray's
+    # self-check (see ``maiocr.tray._binary_stale``) also forces
+    # systemd to start a fresh process on the new interpreter.
+    if _tray_unit_installed():
+        subprocess.run(
+            ["systemctl", "--user", "restart", _tray_service_name()],
+            check=False,
+        )
+    # Also drop a notification request in case the tray process is
+    # not running (custom mode only — the SystemBackend would
+    # handle it itself if the user picked system mode).
+    if settings_mod.get_settings().notification_mode == "custom":
+        _request_tray_bubble(
+            "service.started.request",
+            notifications.EventKind.SUCCESS,
+            "notifications.title.service",
+            "notifications.started",
+        )
+    else:
+        notifications.notify_service_started()
     return 0
 
 
 def cmd_stop(_args) -> int:
     _systemctl(["stop", _service_name()])
-    notify.notify(i18n.t("notifications.stopped"))
+    # Stop the tray too so the user gets a clean shutdown when they
+    # run ``maiocr stop``. The systemd unit's ``PartOf=`` used to
+    # do this automatically; we removed that so the tray could
+    # survive a brief server outage, but on a full stop we want
+    # the tray gone too.
+    if _tray_unit_installed():
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "stop", _tray_service_name()],
+                check=False,
+            )
+        except Exception:
+            pass
+    if settings_mod.get_settings().notification_mode == "custom":
+        _request_tray_bubble(
+            "service.stopped.request",
+            notifications.EventKind.INFO,
+            "notifications.title.service",
+            "notifications.stopped",
+        )
+    else:
+        notifications.notify_service_stopped()
     return 0
 
 
 def cmd_restart(_args) -> int:
+    """Restart the server, and restart the tray to pick up any
+    new binary that was installed in the meantime.
+    """
     _systemctl(["restart", _service_name()])
-    notify.notify(i18n.t("notifications.restarted"))
+    if _tray_unit_installed():
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "restart", _tray_service_name()],
+                check=False,
+            )
+        except Exception:
+            pass
+    if settings_mod.get_settings().notification_mode == "custom":
+        _request_tray_bubble(
+            "service.restarted.request",
+            notifications.EventKind.INFO,
+            "notifications.title.service",
+            "notifications.restarted",
+        )
+    else:
+        notifications.notify_service_restarted()
+    return 0
+
+
+def _request_tray_bubble(
+    event_id: str,
+    kind: "notifications.EventKind",
+    title_key: str,
+    body_key: str,
+) -> None:
+    """Drop a notification request that the tray process will
+    pick up on its next refresh.  Used in custom mode from CLI
+    commands that have no Qt event loop.
+    """
+    from maiocr import i18n
+    from maiocr.notifications import Event, send_request
+    try:
+        send_request(
+            Event(
+                id=event_id,
+                kind=kind,
+                title=i18n.t(title_key),
+                body=i18n.t(body_key),
+            )
+        )
+    except Exception:
+        pass
+
+
+def cmd_refresh_tray(_args) -> int:
+    """Restart the tray icon.  Useful after a manual ``uv tool
+    install`` that did not go through the install script: the tray
+    is left holding an old binary, and this command picks up the
+    new one.
+    """
+    if not _tray_unit_installed():
+        print("tray unit not installed")
+        return 1
+    name = _tray_service_name()
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "restart", name], check=True
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"failed to restart {name}: {exc}", file=sys.stderr)
+        return 1
+    print(f"restarted {name}")
+    return 0
+
+
+def cmd_repair(_args) -> int:
+    """Re-link system PyQt6 into the maiocr tool venv and restart
+    the tray.  This is the CLI counterpart of the install
+    script's PyQt6 linking step.  Run it once after manually
+    reinstalling the tool if the tray falls back to headless
+    mode.
+    """
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
+    system_py = _shutil.which("python3") or _shutil.which("python")
+    if not system_py:
+        print("no system python3 found", file=sys.stderr)
+        return 1
+    # Discover the system Python's site-packages.
+    proc = subprocess.run(
+        [system_py, "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        print("could not discover system site-packages", file=sys.stderr)
+        return 1
+    sys_site = _Path(proc.stdout.strip())
+    if not (sys_site / "PyQt6").is_dir():
+        print(
+            f"PyQt6 not found in {sys_site}. Install python-pyqt6 "
+            f"first: sudo pacman -S python-pyqt6",
+            file=sys.stderr,
+        )
+        return 1
+    # Find the tool's venv site-packages.
+    tool_py = _Path.home() / ".local/share/uv/tools/maiocr/bin/python"
+    if not tool_py.is_file():
+        print(f"tool python not found at {tool_py}", file=sys.stderr)
+        return 1
+    # Determine the tool venv's Python version by asking it.
+    proc = subprocess.run(
+        [str(tool_py), "-c", "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}')"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        print("could not determine tool python version", file=sys.stderr)
+        return 1
+    py_ver = proc.stdout.strip()
+    site_base = _Path(
+        f"{_Path.home()}/.local/share/uv/tools/maiocr/lib/python{py_ver}/site-packages"
+    )
+    if not site_base.is_dir():
+        print(
+            f"tool venv site-packages not found at {site_base}",
+            file=sys.stderr,
+        )
+        return 1
+    # Link every PyQt6* directory.
+    linked = 0
+    for pkg_dir in sys_site.glob("PyQt6*"):
+        if not pkg_dir.is_dir():
+            continue
+        name = pkg_dir.name
+        target = site_base / name
+        if target.is_symlink() or target.exists():
+            target.unlink()
+        target.symlink_to(pkg_dir)
+        linked += 1
+    for info in sys_site.glob("PyQt6*.dist-info"):
+        if not info.is_dir():
+            continue
+        target = site_base / info.name
+        if target.exists():
+            if target.is_dir():
+                _shutil.rmtree(target, ignore_errors=True)
+            else:
+                target.unlink()
+        _shutil.copytree(str(info), str(target))
+        linked += 1
+    # Verify.
+    try:
+        subprocess.run(
+            [str(tool_py), "-c", "import PyQt6.QtWidgets"],
+            check=True, capture_output=True,
+        )
+        print("PyQt6 available in the maiocr tool venv")
+    except subprocess.CalledProcessError:
+        print("PyQt6 still unavailable; check the install", file=sys.stderr)
+        return 1
+    # Restart the tray to pick up the new PyQt6.
+    if _tray_unit_installed():
+        subprocess.run(
+            ["systemctl", "--user", "restart", _tray_service_name()],
+            check=False,
+        )
     return 0
 
 
@@ -238,6 +461,29 @@ def cmd_settings_set(args) -> int:
             updates[k] = max(64 * 1024, int(v))
         elif k in ("log_backup_count", "log_retention_days"):
             updates[k] = max(0, int(v))
+        elif k == "notification_mode":
+            if v not in ("system", "custom"):
+                print(
+                    f"invalid notification_mode: {v} (use 'system' or 'custom')",
+                    file=sys.stderr,
+                )
+                return 2
+            updates[k] = v
+        elif k == "notification_duration":
+            updates[k] = max(1, int(v))
+        elif k in ("click_action_left", "click_action_double"):
+            from maiocr import tray_actions
+            normalised = tray_actions.normalize(v, default="none")
+            if normalised != v and v != "none":
+                # The user provided an unknown id; warn but accept
+                # the normalised value so the next save round-trips
+                # the file.
+                print(
+                    f"warning: unknown click action {v!r}; "
+                    f"falling back to {normalised!r}",
+                    file=sys.stderr,
+                )
+            updates[k] = normalised
         else:
             print(f"unknown setting: {k}", file=sys.stderr)
             return 2
@@ -291,6 +537,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_clean.add_argument("--dry-run", action="store_true")
 
     sub.add_parser("clean-logs", help="rotate the server log immediately")
+    sub.add_parser(
+        "refresh-tray",
+        help="restart the tray icon (picks up a freshly-installed binary)",
+    )
+    sub.add_parser(
+        "repair",
+        help="re-link system PyQt6 into the tool venv and restart the tray",
+    )
 
     # `settings` is handled in main() via a separate parser so that
     # nested subcommands are not mixed with the top-level ones.
@@ -314,6 +568,8 @@ DISPATCH = {
     "tray": cmd_tray,
     "cleanup": cmd_cleanup,
     "clean-logs": cmd_clean_logs,
+    "refresh-tray": cmd_refresh_tray,
+    "repair": cmd_repair,
 }
 
 
@@ -322,6 +578,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     # so any error message we print below is already localised.
     s = settings_mod.get_settings()
     i18n.set_default_language(s.language)
+    # Initialise the notification manager so that ``start`` /
+    # ``stop`` / ``restart`` show the right notification for the
+    # current ``notification_mode`` setting.
+    notifications.initialise()
 
     parser = build_parser()
     if argv is None:

@@ -4,13 +4,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from maiocr import client, i18n, notify, settings
+from maiocr import client, i18n, notifications, settings
 from maiocr.capture import capture
 
 
 def main() -> int:
     s = settings.get_settings()
     i18n.set_default_language(s.language)
+    notifications.initialise()
 
     image = None
     try:
@@ -21,15 +22,21 @@ def main() -> int:
 
             copy(text)
             if s.notify_on_copy:
-                notify.notify(i18n.t("notifications.copied", n=len(text)))
+                # In system mode this fires a notify-send pop-up
+                # directly.  In custom mode the CLI process has no
+                # Qt event loop, so we drop a request file for the
+                # tray process to pick up and show the bubble.
+                if s.notification_mode == "custom":
+                    notifications.request_ocr_completed(len(text))
+                else:
+                    notifications.notify_ocr_completed(len(text))
         else:
             if s.notify_on_copy:
-                notify.notify(i18n.t("notifications.no_text"))
+                notifications.notify_ocr_empty()
         return 0
     except Exception as exc:
-        msg = i18n.t("notifications.error", error=str(exc))
-        notify.notify(msg)
-        print(msg, file=sys.stderr)
+        notifications.notify_error(f"{exc}")
+        print(str(exc), file=sys.stderr)
         return 1
     finally:
         if image:

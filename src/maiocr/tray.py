@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import signal
@@ -32,11 +33,123 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from maiocr import client, gpu, i18n, notify, resources, settings as settings_mod
-from maiocr import paths, system_info
+log = logging.getLogger("maiocr.tray")
+
+from maiocr import client, gpu, i18n, notifications, resources, settings as settings_mod
+from maiocr import paths, system_info, tray_actions
 
 
 SERVICE = "MaiOCR.service"
+
+
+def _drain_notification_requests() -> int:
+    """Read every ``*.json`` in ``NOTIFY_DIR``, dispatch each as a
+    notification through the manager, and delete the file.
+
+    Returns the number of requests processed.  Called from the
+    tray's ``refresh()`` so the bubble appears within a couple of
+    seconds of the CLI writing the request.
+    """
+    import json
+    import os
+
+    notify_dir = paths.NOTIFY_DIR
+    if not notify_dir.is_dir():
+        return 0
+    # Sort by filename (timestamp prefix) so older requests are
+    # processed first.
+    files = sorted(notify_dir.glob("*.json"))
+    count = 0
+    for path in files:
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            ev = notifications.Event(
+                id=str(data.get("id", "request")),
+                kind=notifications.EventKind(str(data.get("kind", "info"))),
+                title=str(data.get("title", "")),
+                body=str(data.get("body", "")),
+            )
+            # Route through the manager so the active backend
+            # (custom bubble or system) handles it.  The manager
+            # already has a mutex so this is safe.
+            notifications.get_manager().notify_event(ev)
+            count += 1
+        except Exception as exc:
+            log.warning("failed to handle notify request %s: %s", path, exc)
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    # Also clean up any leftover ``*.tmp`` files from a previous
+    # crash mid-write.
+    for path in notify_dir.glob("*.tmp"):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return count
+
+
+def _binary_stale() -> bool:
+    """Return True if the running Python interpreter or the
+    ``maiocr-tray`` entry point was modified after this process
+    started.  The tray uses this to detect a stale binary left over
+    from a previous install and exit gracefully so systemd can
+    restart it on the new interpreter.
+    """
+    try:
+        import os
+        my_pid = os.getpid()
+        # ``/proc/<pid>/stat`` field 22 (1-indexed) is the start
+        # time in clock ticks since boot.  Fall back to /proc
+        # ``/status`` ``Birth`` line for older kernels.
+        my_start_seconds: float
+        try:
+            with open(f"/proc/{my_pid}/stat") as fh:
+                fields = fh.read().split()
+            # 22nd field is start time in clock ticks since boot.
+            start_ticks = int(fields[21])
+            clk = os.sysconf("SC_CLK_TCK")
+            if clk <= 0:
+                clk = 100
+            my_start_seconds = start_ticks / clk
+        except Exception:
+            # Fallback: /proc/<pid>/status ``Birth`` line.
+            with open(f"/proc/{my_pid}/status") as fh:
+                for line in fh:
+                    if line.startswith("Birth:"):
+                        start_jiffies = int(line.split()[1])
+                        clk = os.sysconf("SC_CLK_TCK") or 100
+                        my_start_seconds = start_jiffies / clk
+                        break
+                else:
+                    return False
+
+        # Compare against the venv's python binary mtime.
+        for candidate in (
+            sys.executable,
+            os.path.realpath(sys.executable),
+        ):
+            try:
+                mtime = os.path.getmtime(candidate)
+                if mtime > my_start_seconds + 1.0:
+                    return True
+            except OSError:
+                continue
+
+        # Compare against the maiocr-tray entry point that systemd
+        # invokes.
+        tray_bin = Path.home() / ".local/bin/maiocr-tray"
+        try:
+            if tray_bin.exists() and tray_bin.stat().st_mtime > my_start_seconds + 1.0:
+                return True
+        except OSError:
+            pass
+        return False
+    except Exception:
+        return False
 
 
 def _status_path() -> Path:
@@ -202,28 +315,27 @@ def format_gpu_text() -> str:
 def release_vram() -> None:
     """Send ``release_vram`` to the running server and notify the user."""
     if not client.is_running(timeout=0.5):
-        notify.notify(i18n.t("errors.server_unreachable"))
+        notifications.notify_error(i18n.t("errors.server_unreachable"))
         return
     try:
         resp = client.release_vram(timeout=10.0)
     except Exception as exc:
-        notify.notify(i18n.t("notifications.error", error=str(exc)))
+        notifications.notify_error(f"{exc}")
         return
     if resp is None or resp.get("error"):
-        notify.notify(
-            i18n.t(
-                "notifications.error",
-                error=str(resp.get("error") if resp else "no response"),
-            )
+        notifications.notify_error(
+            str(resp.get("error") if resp else "no response")
         )
     elif resp.get("released"):
-        notify.notify(i18n.t("notifications.vram_released"))
+        # The tray process IS the event loop, so we can call the
+        # notification backend directly.
+        notifications.notify_vram_released()
     else:
-        notify.notify(i18n.t("notifications.vram_already_unloaded"))
+        notifications.notify_vram_already_unloaded()
 
 
 def restart_service() -> None:
-    notify.notify(i18n.t("notifications.restarted"))
+    notifications.notify_service_restarted()
     _run_cli("restart")
     time.sleep(0.7)
 
@@ -232,14 +344,14 @@ def start_service() -> None:
     _run_cli("start")
     time.sleep(0.7)
     if client.is_running(timeout=1.0):
-        notify.notify(i18n.t("notifications.started"))
+        notifications.notify_service_started()
 
 
 def stop_service() -> None:
     _run_cli("stop")
     time.sleep(0.7)
     if not client.is_running(timeout=1.0):
-        notify.notify(i18n.t("notifications.stopped"))
+        notifications.notify_service_stopped()
 
 
 def run_ocr() -> None:
@@ -247,7 +359,7 @@ def run_ocr() -> None:
     try:
         subprocess.Popen([sys.executable, "-m", "maiocr.cli", "run"])
     except Exception as exc:
-        notify.notify(i18n.t("notifications.error", error=str(exc)))
+        notifications.notify_error(f"{exc}")
 
 
 def show_status() -> str:
@@ -386,15 +498,54 @@ def _try_qt_tray() -> int | None:
         painter.end()
         return QIcon(pix)
 
+    def _is_service_running() -> bool:
+        """Return True if the MaiOCR server is reachable on the
+        Unix socket.  This is the right signal for the tray
+        because ``engine_loaded`` is False for the entire warm-up
+        period after ``maiocr start`` — the server is up but the
+        model has not been loaded yet — and we do not want to
+        confuse that with "service is not running".
+        """
+        try:
+            return client.is_running(timeout=0.5)
+        except Exception:
+            return False
+
     def state_from_payload(payload: dict) -> str:
+        """The tray's state machine has three values:
+
+        * ``"off"``   — the MaiOCR server is not running.
+        * ``"idle"``  — the server is up but no engine is loaded.
+        * ``"gpu"`` / ``"cpu"`` — the engine is loaded.
+
+        Transitions ``off`` ↔ ``idle`` (and ``off`` ↔ ``gpu``) are
+        the ones the user cares about for notifications: they mark
+        the moment the service actually went up or down.
+        """
+        engine_loaded = bool(payload.get("engine_loaded", False))
         provider = payload.get("provider", "unloaded")
-        if not payload.get("engine_loaded", False):
-            return "off"
+        if not engine_loaded:
+            # The status file always shows ``engine_loaded: false``
+            # for the "service is up but model is unloaded" case.
+            # We disambiguate against the actual socket to decide
+            # whether the service is alive at all.
+            if not _is_service_running():
+                return "off"
+            # Distinguish: did the server *just* come up (we
+            # observed the service starting this iteration) or has
+            # it been up for a while?  ``provider == "unloaded"``
+            # is the canonical "server up, no model" state.  We
+            # report it as ``"idle"``.
+            if provider in ("unloaded", ""):
+                return "idle"
+            return "gpu" if provider in (
+                "CUDAExecutionProvider", "TensorrtExecutionProvider"
+            ) else "cpu"
         if provider in ("CUDAExecutionProvider", "TensorrtExecutionProvider"):
             return "gpu"
         if provider == "CPUExecutionProvider":
             return "cpu"
-        return "unknown"
+        return "idle"
 
     def state_label(state: str) -> str:
         if state == "gpu":
@@ -411,9 +562,27 @@ def _try_qt_tray() -> int | None:
 
     current_state = {"value": "off", "provider": "unloaded"}
 
+    def _notify_event(kind: notifications.EventKind, title_key: str,
+                     body_key: str, **kwargs) -> None:
+        """Fire a notification event through the manager.
+
+        Used for state-change bubbles (e.g. service just stopped,
+        engine just loaded on GPU). The active backend decides how
+        to display them — in custom mode the bubble appears in the
+        tray, in system mode notify-send is used.
+        """
+        try:
+            notifications.notify_custom(
+                title_key, body_key, kind=kind, **kwargs
+            )
+        except Exception as exc:
+            log.warning("notification failed: %s", exc)
+
     def refresh() -> None:
         payload = _refresh_status()
         state = state_from_payload(payload)
+        new_state = state
+        old_state = current_state["value"]
         current_state["value"] = state
         current_state["provider"] = payload.get("provider", "unloaded")
         tray.setIcon(make_overlay_icon(app_icon, state))
@@ -421,6 +590,32 @@ def _try_qt_tray() -> int | None:
             tray.setToolTip(i18n.t("tray.tooltip_stopped"))
         else:
             tray.setToolTip(i18n.t("tray.tooltip_running", state=state_label(state)))
+
+        # Fire a notification whenever the service transitions
+        # between "off" and any running state.  The 0.5 s socket
+        # probe is fast, so this happens within one refresh
+        # iteration (the refresh timer runs every 2 s).
+        is_running = state != "off"
+        was_running = old_state != "off"
+        if is_running and not was_running:
+            _notify_event(
+                notifications.EventKind.SUCCESS,
+                "notifications.title.service",
+                "notifications.started",
+            )
+        elif not is_running and was_running:
+            _notify_event(
+                notifications.EventKind.INFO,
+                "notifications.title.service",
+                "notifications.stopped",
+            )
+
+        # Drain notification requests dropped by the CLI / main
+        # process (e.g. ``maiocr run`` after a successful OCR).
+        # This is the IPC path that lets the tray's custom bubble
+        # appear even when the event was generated in a different
+        # process.
+        _drain_notification_requests()
 
     # ------------------------------------------------------------------
     # Dialogs
@@ -471,13 +666,13 @@ def _try_qt_tray() -> int | None:
         try:
             _info_dialog(i18n.t("actions.service_status"), _format_status_text())
         except Exception as exc:
-            notify.notify(i18n.t("notifications.error", error=str(exc)))
+            notifications.notify_error(f"{exc}")
 
     def show_gpu_info() -> None:
         try:
             _info_dialog(i18n.t("actions.gpu_info"), _format_gpu_text())
         except Exception as exc:
-            notify.notify(i18n.t("notifications.error", error=str(exc)))
+            notifications.notify_error(f"{exc}")
 
     def release_vram() -> None:
         # Call the module-level implementation, then refresh the icon.
@@ -530,18 +725,96 @@ def _try_qt_tray() -> int | None:
 
     tray.setContextMenu(menu)
 
-    # Left-click on the tray icon: show status (most users expect
-    # that).
+    # Tray icon click handling. The user can pick the action for
+    # left-click and double-click independently from Preferences.
+    # Qt's QSystemTrayIcon fires ``Trigger`` (single-click) first
+    # and then ``DoubleClick`` only if a second click arrives in
+    # time. To avoid running the single-click action *and* the
+    # double-click action for a true double click, we delay the
+    # single-click action by ``DOUBLE_CLICK_INTERVAL_MS`` and
+    # cancel the pending timer if a double-click arrives.
+    DOUBLE_CLICK_INTERVAL_MS = 250
+
+    # ``_invoke_action`` runs the chosen action.  Defined below
+    # so we can use the live ``tray`` / ``menu`` / ``app`` objects.
+    def _invoke_action(action_id: str) -> None:
+        try:
+            action_id = tray_actions.normalize(action_id)
+            if action_id == "none":
+                return
+            if action_id == "release_vram":
+                release_vram()
+            elif action_id == "run_ocr":
+                run_ocr()
+            elif action_id == "show_status":
+                show_status()
+            elif action_id == "show_gpu":
+                show_gpu_info()
+            elif action_id == "restart":
+                restart_service()
+            elif action_id == "preferences":
+                open_preferences()
+            elif action_id == "quit":
+                app.quit()
+            else:
+                # Unknown id (should not happen because we validate
+                # against the registry).  Fall back to the legacy
+                # behaviour: release VRAM.
+                release_vram()
+        except Exception as exc:
+            notifications.notify_error(f"{exc}")
+
+    pending_single_click = {"timer": None}
+
+    def _cancel_pending_single_click() -> None:
+        t = pending_single_click["timer"]
+        if t is not None:
+            t.stop()
+            pending_single_click["timer"] = None
+
     def on_activated(reason) -> None:
-        # Trigger == single click; DoubleClick and MiddleClick also
-        # show status because there is no other natural action.
         from PyQt6.QtWidgets import QSystemTrayIcon as _QSTI  # type: ignore
-        if reason in (
-            _QSTI.ActivationReason.Trigger,
-            _QSTI.ActivationReason.DoubleClick,
-            _QSTI.ActivationReason.MiddleClick,
-        ):
-            show_status()
+        from PyQt6.QtCore import QTimer as _QT  # type: ignore
+
+        cur = settings_mod.get_settings()
+        single_id = tray_actions.normalize(cur.click_action_left)
+        double_id = tray_actions.normalize(cur.click_action_double)
+
+        if reason == _QSTI.ActivationReason.DoubleClick:
+            # Cancel any pending single-click action — this is a
+            # real double-click, the user wants the double-click
+            # behaviour, not both.
+            _cancel_pending_single_click()
+            if double_id != "none":
+                _invoke_action(double_id)
+            return
+
+        if reason == _QSTI.ActivationReason.Trigger:
+            # If the user has a double-click action configured and
+            # it differs from the single-click action, wait for
+            # the double-click timeout to disambiguate.  If both
+            # are the same, run immediately to avoid a perceptible
+            # delay.
+            if double_id != "none" and double_id != single_id:
+                # Schedule the single-click action; cancel if a
+                # DoubleClick event arrives in time.
+                t = _QT()
+                t.setSingleShot(True)
+                t.setInterval(DOUBLE_CLICK_INTERVAL_MS)
+                def _fire():
+                    pending_single_click["timer"] = None
+                    if single_id != "none":
+                        _invoke_action(single_id)
+                t.timeout.connect(_fire)
+                pending_single_click["timer"] = t
+                t.start()
+                return
+            # No double-click action configured, or both actions are
+            # the same: run the single-click action immediately.
+            if single_id != "none":
+                _invoke_action(single_id)
+            return
+
     tray.activated.connect(on_activated)
 
     # ------------------------------------------------------------------
@@ -637,6 +910,68 @@ def _try_qt_tray() -> int | None:
             )
             layout.addRow(QLabel(i18n.t("settings.log_retention_days_help")))
 
+            # Notifications
+            self._notification_mode = QComboBox()
+            for code, label_key in (
+                ("system", "settings.notification_mode_system"),
+                ("custom", "settings.notification_mode_custom"),
+            ):
+                self._notification_mode.addItem(i18n.t(label_key), code)
+            for i in range(self._notification_mode.count()):
+                if self._notification_mode.itemData(i) == cur.notification_mode:
+                    self._notification_mode.setCurrentIndex(i)
+                    break
+            layout.addRow(
+                QLabel(i18n.t("settings.notification_mode") + ":"),
+                self._notification_mode,
+            )
+            layout.addRow(QLabel(i18n.t("settings.notification_mode_help")))
+
+            self._notification_duration = QSpinBox()
+            self._notification_duration.setRange(1, 60)
+            self._notification_duration.setValue(cur.notification_duration)
+            self._notification_duration.setSuffix(" s")
+            layout.addRow(
+                QLabel(i18n.t("settings.notification_duration") + ":"),
+                self._notification_duration,
+            )
+            layout.addRow(QLabel(i18n.t("settings.notification_duration_help")))
+
+            # Tray-icon click actions.  We populate a single
+            # ``QComboBox`` per click type, with the entries
+            # coming from ``maiocr.tray_actions`` so adding a new
+            # action is a one-line change in one place.
+            def _build_action_combo(current: str) -> "QComboBox":
+                cb = QComboBox()
+                for action in tray_actions.all_actions():
+                    cb.addItem(i18n.t(action.label_key), action.id)
+                # Fall back to "none" if the persisted id is
+                # unknown (defensive — the Settings layer already
+                # normalises this, but a manual edit of
+                # settings.yml should not crash the dialog).
+                want = current if tray_actions.is_valid(current) else "none"
+                for i in range(cb.count()):
+                    if cb.itemData(i) == want:
+                        cb.setCurrentIndex(i)
+                        break
+                return cb
+
+            self._click_action_left = _build_action_combo(cur.click_action_left)
+            layout.addRow(
+                QLabel(i18n.t("settings.click_action_left") + ":"),
+                self._click_action_left,
+            )
+            layout.addRow(QLabel(i18n.t("settings.click_action_left_help")))
+
+            self._click_action_double = _build_action_combo(
+                cur.click_action_double
+            )
+            layout.addRow(
+                QLabel(i18n.t("settings.click_action_double") + ":"),
+                self._click_action_double,
+            )
+            layout.addRow(QLabel(i18n.t("settings.click_action_double_help")))
+
             buttons = QDialogButtonBox(
                 QDialogButtonBox.StandardButton.Ok
                 | QDialogButtonBox.StandardButton.Cancel
@@ -662,9 +997,22 @@ def _try_qt_tray() -> int | None:
                 log_max_bytes=self._log_max_kb.value() * 1024,
                 log_backup_count=self._log_backups.value(),
                 log_retention_days=self._log_retention.value(),
+                notification_mode=self._notification_mode.currentData(),
+                notification_duration=self._notification_duration.value(),
+                click_action_left=tray_actions.normalize(
+                    self._click_action_left.currentData()
+                ),
+                click_action_double=tray_actions.normalize(
+                    self._click_action_double.currentData()
+                ),
             )
             settings_mod.save_settings(cur)
             i18n.set_default_language(cur.language)
+            # The notification manager keeps a reference to the
+            # current active backend; the easiest way to honour a
+            # mode change without restarting the tray is to
+            # re-initialise the backends.
+            notifications.reinit()
             client.set_remote_settings({"language": cur.language})
             self.accept()
 
@@ -674,6 +1022,8 @@ def _try_qt_tray() -> int | None:
     timer.timeout.connect(refresh)
     timer.start()
     refresh()
+    notifications._mark_event_loop_started()
+    notifications.reinit()  # pick up the Qt event-loop flag
 
     def handle_signal(*_):
         app.quit()
@@ -721,6 +1071,7 @@ def main() -> int:
 
     s = settings_mod.get_settings()
     i18n.set_default_language(s.language)
+    notifications.initialise()
     paths.RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_status_file()
 
