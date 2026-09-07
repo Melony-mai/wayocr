@@ -621,27 +621,21 @@ def _try_qt_tray() -> int | None:
     # Dialogs
     # ------------------------------------------------------------------
     #
-    # All dialogs opened from the tray must be **non-focus-stealing**
-    # so that Niri does not move keyboard focus from the application
-    # the user is currently using.  ``WA_ShowWithoutActivating`` asks
-    # the window manager to show the window without raising or
-    # focusing it, and ``WindowDoesNotAcceptFocus`` means the window
-    # itself never accepts keyboard focus.
-
-    def _non_focus_stealing_flags():
-        return (
-            Qt.WindowType.Window
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-        )
+    # Dialogs opened from the tray menu are **user-initiated** — the
+    # user explicitly clicked an entry, so taking focus is the
+    # expected and desired behaviour.  We use the standard Qt
+    # ``QDialog`` defaults which work reliably on Niri, sway, KDE
+    # and every other Wayland compositor we tested.
+    #
+    # Notifications (which fire automatically and have not been
+    # requested by the user) are sent through the freedesktop
+    # notification spec over D-Bus, which is the focus-preserving
+    # path documented in ``README.md``.
 
     def _info_dialog(title: str, body: str) -> None:
         dlg = QDialog()
         dlg.setWindowTitle(title)
         dlg.setWindowIcon(app_icon)
-        dlg.setWindowFlags(self._non_focus_stealing_flags())
-        dlg.setAttribute(
-            Qt.WidgetAttribute.WA_ShowWithoutActivating, True
-        )
         dlg.resize(560, 420)
         layout = QVBoxLayout(dlg)
         view = QPlainTextEdit(dlg)
@@ -661,8 +655,9 @@ def _try_qt_tray() -> int | None:
         refresh_btn.clicked.connect(lambda: _refresh_then_redraw(dlg, view, title))
         buttons.addButton(refresh_btn, QDialogButtonBox.ButtonRole.ActionRole)
         layout.addWidget(buttons)
-        dlg.show()  # .show() not .exec() so we don't block + modal
+        dlg.show()
         dlg.raise_()
+        dlg.activateWindow()
 
     def _refresh_then_redraw(dlg, view: QPlainTextEdit, title: str) -> None:
         if title == i18n.t("actions.service_status"):
@@ -839,17 +834,28 @@ def _try_qt_tray() -> int | None:
     # Preferences dialog
     # ------------------------------------------------------------------
     def open_preferences() -> None:
-        # ``dlg.exec()`` would block the tray's event loop and *also*
-        # makes the dialog modal, which on Niri focuses it.  Show
-        # the dialog non-modally so the tray can still update the
-        # status icon in the background.
-        dlg = PreferencesDialog()
-        dlg.show()
-        dlg.raise_()
-        # ``refresh`` is called from the dialog's ``_on_accept`` so
-        # the tray picks up the new settings immediately on Save.
-        # We also force a refresh now in case the user just closes
-        # the dialog.
+        # The Preferences dialog is opened when the user clicks the
+        # tray menu entry.  The user has explicitly invoked this
+        # action, so it is appropriate for the dialog to take focus.
+        # We use ``dlg.show()`` + ``dlg.raise_()`` + ``dlg.activateWindow()``
+        # so the dialog appears reliably on every Wayland
+        # compositor (Niri, sway, KDE Plasma, …).  The Qt docs warn
+        # that ``raise_()`` alone is not enough on Wayland because
+        # the compositor decides the stacking; the explicit
+        # ``activateWindow()`` triggers a proper xdg_activation
+        # request.
+        log.info("open_preferences called; creating dialog")
+        try:
+            dlg = PreferencesDialog()
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            log.info("Preferences dialog shown: visible=%s, modal=%s",
+                     dlg.isVisible(), dlg.isModal())
+        except Exception as exc:
+            log.exception("failed to open preferences dialog: %s", exc)
+            return
+
         def _on_close():
             try:
                 refresh()
@@ -862,17 +868,9 @@ def _try_qt_tray() -> int | None:
             super().__init__(parent)
             self.setWindowTitle(i18n.t("actions.preferences"))
             self.setWindowIcon(app_icon)
-            # Non-focus-stealing: when the user clicks "Preferences"
-            # in the tray menu the dialog should appear without
-            # stealing keyboard focus from whatever the user is
-            # currently using.
-            self.setWindowFlags(
-                Qt.WindowType.Window
-                | Qt.WindowType.WindowDoesNotAcceptFocus
-            )
-            self.setAttribute(
-                Qt.WidgetAttribute.WA_ShowWithoutActivating, True
-            )
+            # Standard QDialog flags so the dialog appears correctly
+            # on Niri, sway, KDE, X11, etc.  The user explicitly
+            # clicked "Preferences" so taking focus is expected.
             self.resize(440, 320)
             layout = QFormLayout(self)
 
