@@ -1,11 +1,11 @@
 # MaiOCR
 
 > GPU-accelerated screenshot OCR service for Wayland — with a
-> system-tray indicator, persistent settings, and English / Chinese
+> system-tray indicator, persistent settings, and an English / Chinese
 > interface.
 
 MaiOCR lets you grab a screen area, recognise the text inside it
-(Chinese, English, Japanese, mixed), and copy the result to the
+(Chinese, English, Japanese, or mixed), and copy the result to the
 clipboard. The OCR model runs on your NVIDIA GPU when one is
 available, with a CPU fallback.
 
@@ -23,13 +23,13 @@ Unix-domain socket.
   request actually arrives, and can be released on demand without
   stopping the service. A configurable auto-release timer is also
   available.
-- **Persistent server** — `systemd --user` service keeps the model
+- **Persistent server** — a `systemd --user` service keeps the model
   warm between OCR calls.
 - **Layout-preserving post-processing** — the recogniser returns
   bounding boxes that the post-processor uses to preserve indentation,
   paragraph breaks, code alignment, columns, and reading order.
 - **Mixed-language OCR** — Chinese (Simplified / Traditional),
-  Japanese, English, and mixed.
+  Japanese, English, and mixed scripts.
 - **System-tray indicator** — a Niri / DankMaterialShell-friendly
   SNI tray icon with right-click actions (Release VRAM, Restart,
   Start, Stop, Service status, GPU info, Run OCR, Preferences, Quit).
@@ -37,10 +37,10 @@ Unix-domain socket.
   Preferences.
 - **Live status file** at `$XDG_RUNTIME_DIR/maiocr/status.json` that
   DMS Quickshell widgets can poll.
-- **English / 简体中文 UI** — switch at any time with
-  `maiocr settings lang zh-CN`. The choice is persisted in
-  `$XDG_CONFIG_HOME/maiocr/settings.yml`.
-- **Arch-Linux-first** — single install script installs system
+- **Bilingual English / Simplified Chinese UI** — switch at any
+  time with `maiocr settings lang zh-CN`. The choice is persisted
+  in `$XDG_CONFIG_HOME/maiocr/settings.yml`.
+- **Arch-Linux-first** — a single install script installs system
   packages, the GPU runtime, the systemd units, the desktop entries,
   and the tray autostart.
 
@@ -49,7 +49,7 @@ Unix-domain socket.
 | Language        | Notes                          |
 |-----------------|--------------------------------|
 | English         | default                        |
-| Simplified Chinese (简体中文) | default model     |
+| Simplified Chinese | default model              |
 | Traditional Chinese | supported via the default model |
 | Japanese        | supported via the default model |
 | Mixed scripts   | works out of the box           |
@@ -143,7 +143,7 @@ The script is **idempotent** — re-run it to upgrade. It will:
 
    ```bash
    maiocr settings lang en      # English
-   maiocr settings lang zh-CN   # 简体中文
+   maiocr settings lang zh-CN   # Chinese (Simplified)
    ```
 
 3. **Try it**: press <kbd>Super</kbd> + <kbd>Print</kbd>, select an
@@ -252,7 +252,7 @@ to a generated icon if the file is missing.
 ## Notifications
 
 MaiOCR has a clean event / backend / manager architecture.  Every
-notification is built as a logical ``Event`` (id, kind, title,
+notification is built as a logical `Event` (id, kind, title,
 body) and the **single** active backend is responsible for rendering
 it.  The two notification modes are mutually exclusive: the
 **non-active** backends are never invoked.
@@ -265,8 +265,8 @@ it.  The two notification modes are mutually exclusive: the
 The previous "Custom Notification Bubble" mode has been folded into
 the Standard Notification mode: a "custom" notification on Niri is
 just a well-formed D-Bus notification rendered by the user's
-notification daemon.  ``notification_mode`` accepts ``"dbus"``
-(alias: ``"custom"``) and ``"system"``; both are non-focus-stealing
+notification daemon.  `notification_mode` accepts `"dbus"`
+(alias: `"custom"`) and `"system"`; both are non-focus-stealing
 and never create a MaiOCR Wayland surface.
 
 ### Why MaiOCR never opens a notification window
@@ -274,12 +274,12 @@ and never create a MaiOCR Wayland surface.
 The freedesktop notification spec is deliberately non-focus-stealing:
 the bubble is drawn by your notification daemon as a layer-shell
 overlay, so MaiOCR itself never creates a new Wayland toplevel
-window for a notification (a new ``wl_shell_surface`` would make
+window for a notification (a new `wl_shell_surface` would make
 Niri move focus to it, which is disruptive).
 
-For the same reason the tray icon is a ``QSystemTrayIcon`` (the SNI
+For the same reason the tray icon is a `QSystemTrayIcon` (the SNI
 protocol — the SNI host draws the icon in its reserved area, not as
-a MaiOCR window) and capture uses ``slurp`` + ``grim`` (which use
+a MaiOCR window) and capture uses `slurp` + `grim` (which use
 the layer-shell protocol themselves for the region-selection
 overlay).  This design is the most portable across sway, hyprland,
 river and other Wayland compositors.
@@ -294,7 +294,7 @@ maiocr settings set notification_duration=8
 ```
 
 The value is in seconds (1 – 60) and is persisted in
-``settings.yml``.  Silent task-completion indicators are
+`settings.yml`.  Silent task-completion indicators are
 transient (do not enter the persistent notification history)
 regardless of this setting.
 
@@ -303,12 +303,12 @@ regardless of this setting.
 All three dialogs opened from the tray are normal QDialog windows.
 The user has explicitly clicked an entry in the tray menu, so
 taking focus is the expected behaviour.  They use the standard
-QDialog window flags and ``dlg.show() + dlg.raise_() +
-dlg.activateWindow()`` to surface reliably on Niri, sway, KDE
-Plasma and X11.  The dialogs are non-modal (``dlg.show()`` rather
-than ``dlg.exec()``) so the tray can keep updating the status
+QDialog window flags and `dlg.show() + dlg.raise_() +
+dlg.activateWindow()` to surface reliably on Niri, sway, KDE
+Plasma and X11.  The dialogs are non-modal (`dlg.show()` rather
+than `dlg.exec()`) so the tray can keep updating the status
 icon while a dialog is open.  Each open dialog is also held in
-the tray's ``_open_dialogs`` list so the Python wrapper is not
+the tray's `_open_dialogs` list so the Python wrapper is not
 garbage-collected (which would otherwise destroy the underlying
 QObject and make the window vanish within milliseconds).
 
@@ -394,7 +394,7 @@ pacman -S python-pyqt6
 ./scripts/install-arch.sh
 ```
 
-You can also force a re-link with the new `maiocr repair` command:
+You can also force a re-link with the `maiocr repair` command:
 
 ```bash
 maiocr repair
@@ -403,12 +403,12 @@ maiocr repair
 ### Notifications do not appear
 
 MaiOCR delivers notifications through the freedesktop notification
-spec over D-Bus (``org.freedesktop.Notifications``), rendered by
+spec over D-Bus (`org.freedesktop.Notifications`), rendered by
 your notification daemon (mako, dunst, fnott, the dms / quickshell
 built-in notifier, …).  If a notification is missing:
 
 1. Confirm a notification daemon is actually running on your
-   session.  On a bare Niri setup the installer installs ``mako``
+   session.  On a bare Niri setup the installer installs `mako`
    for you:
    ```bash
    pgrep -x mako || pgrep -x dunst || pgrep -x fnott
@@ -422,17 +422,17 @@ built-in notifier, …).  If a notification is missing:
    ```bash
    journalctl --user -u MaiOCR-tray.service -n 30 | grep -i "backend\|notification"
    ```
-   You should see ``active=dbus`` when the D-Bus Notifications
+   You should see `active=dbus` when the D-Bus Notifications
    service is available.
-3. If the mode is ``system``, check that ``notify-send`` exists
-   (``libnotify`` is installed by the installer).
+3. If the mode is `system`, check that `notify-send` exists
+   (`libnotify` is installed by the installer).
 4. The D-Bus notification spec never creates a MaiOCR window, so
    there is no MaiOCR Wayland surface to hide — if the daemon is
    running and the backend is active, the bubble appears from your
    daemon.  Check the daemon's own logs if it still does not show.
 
-Notifications triggered from a terminal (``maiocr run``,
-``maiocr start``, …) are dropped as a request file for the tray
+Notifications triggered from a terminal (`maiocr run`,
+`maiocr start`, …) are dropped as a request file for the tray
 process to forward to the backend; this can add up to ~2 s of
 latency (one tray refresh cycle).
 
