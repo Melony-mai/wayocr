@@ -104,19 +104,29 @@ def configure() -> logging.Logger:
     # log file is never touched.
     _prune_old_backups(log_path, cfg["backup_count"], cfg["retention_days"])
 
-    # Also tee to stderr when running interactively (helps during
-    # `maiocr-server` from a terminal; systemd will capture stderr into
-    # the journal). The handler is silent on close errors.
-    if os.isatty(2):
+    # Also tee to stderr so the journal (``maiocr-server`` /
+    # ``maiocr-tray`` under systemd) and an interactive terminal both
+    # see the log in real time.  When stderr is a TTY we use a short
+    # timestamp; otherwise we keep the full timestamp that systemd
+    # already records on its own lines.
+    try:
         sh = logging.StreamHandler()
+        if os.isatty(2):
+            datefmt = "%H:%M:%S"
+        else:
+            datefmt = "%Y-%m-%d %H:%M:%S"
         sh.setFormatter(
             logging.Formatter(
                 fmt="%(asctime)s %(levelname)s %(message)s",
-                datefmt="%H:%M:%S",
+                datefmt=datefmt,
             )
         )
         sh.setLevel(_level_value(s.log_level))
         logger.addHandler(sh)
+    except Exception:
+        # stderr might be closed in odd environments; never let
+        # logging setup itself raise.
+        pass
 
     return logger
 

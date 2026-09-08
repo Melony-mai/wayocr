@@ -628,8 +628,10 @@ def build_settings_parser() -> argparse.ArgumentParser:
         "key_value",
         nargs="+",
         help="settings in key=value form "
-        "(language, auto_release_vram, prefer_gpu, notify_on_copy, "
-        "auto_release_seconds, log_level)",
+        "(language, auto_release_vram, auto_release_seconds, "
+        "prefer_gpu, notify_on_copy, log_level, log_max_bytes, "
+        "log_backup_count, log_retention_days, notification_mode, "
+        "notification_duration, click_action_left, click_action_double)",
     )
     p_lang = sub.add_parser("lang", help="set UI language")
     p_lang.add_argument("language", help="language code (en, zh-CN)")

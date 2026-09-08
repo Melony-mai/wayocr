@@ -269,29 +269,20 @@ notification daemon.  ``notification_mode`` accepts ``"dbus"``
 (alias: ``"custom"``) and ``"system"``; both are non-focus-stealing
 and never create a MaiOCR Wayland surface.
 
-### Why no QWidget bubble on Niri
+### Why MaiOCR never opens a notification window
 
-Earlier versions of MaiOCR drew a custom ``QWidget`` for the
-"custom bubble" mode.  This was abandoned for two reasons:
+The freedesktop notification spec is deliberately non-focus-stealing:
+the bubble is drawn by your notification daemon as a layer-shell
+overlay, so MaiOCR itself never creates a new Wayland toplevel
+window for a notification (a new ``wl_shell_surface`` would make
+Niri move focus to it, which is disruptive).
 
-1.  Creating a new ``wl_shell_surface`` makes Niri move focus to
-    the new window, which is disruptive.  The standard Wayland
-    pattern is to use the **freedesktop notification spec**
-    (``org.freedesktop.Notifications``) which renders the bubble
-    via a layer-shell overlay drawn by the notification daemon —
-    no focus change for the user.
-2.  Niri's compositor handles SNI / layer-shell correctly.  Other
-    Wayland compositors (sway, hyprland, river) all support the
-    same D-Bus spec, so this is the most portable approach.
-
-The tray icon itself is still a ``QSystemTrayIcon`` (SNI protocol)
-— that is the standard Wayland tray mechanism and does not create
-a new MaiOCR window either: the SNI host draws the icon in its
-reserved area.
-
-OCR capture uses ``slurp`` + ``grim`` — external Wayland tools
-that already use the layer-shell protocol themselves, so the
-region-selection overlay is not a MaiOCR window either.
+For the same reason the tray icon is a ``QSystemTrayIcon`` (the SNI
+protocol — the SNI host draws the icon in its reserved area, not as
+a MaiOCR window) and capture uses ``slurp`` + ``grim`` (which use
+the layer-shell protocol themselves for the region-selection
+overlay).  This design is the most portable across sway, hyprland,
+river and other Wayland compositors.
 
 ### Notification duration
 
@@ -309,25 +300,21 @@ regardless of this setting.
 
 ### Service Status / GPU Information / Preferences dialogs
 
-All three dialogs opened from the tray use
-``Qt.WindowType.WindowDoesNotAcceptFocus`` plus
-``WA_ShowWithoutActivating``, so opening them does not steal
-keyboard focus from the application the user is currently using.
-They are non-modal (``dlg.show()`` rather than ``dlg.exec()``) so
-the tray can keep updating the status icon while a dialog is open.
+All three dialogs opened from the tray are normal QDialog windows.
+The user has explicitly clicked an entry in the tray menu, so
+taking focus is the expected behaviour.  They use the standard
+QDialog window flags and ``dlg.show() + dlg.raise_() +
+dlg.activateWindow()`` to surface reliably on Niri, sway, KDE
+Plasma and X11.  The dialogs are non-modal (``dlg.show()`` rather
+than ``dlg.exec()``) so the tray can keep updating the status
+icon while a dialog is open.  Each open dialog is also held in
+the tray's ``_open_dialogs`` list so the Python wrapper is not
+garbage-collected (which would otherwise destroy the underlying
+QObject and make the window vanish within milliseconds).
 
-### Notification duration
-
-Configure the bubble display time in **Preferences → Bubble
-display duration** (or via the CLI:
-
-```bash
-maiocr settings set notification_duration=8
-```
-
-The value is in seconds (1 – 60) and is persisted in
-``settings.yml``.  The silent task-completion indicator is
-always brief (~1.2 – 4 s) and is not affected by this setting.
+Notifications, which fire automatically and have *not* been
+requested by the user, are still routed through the freedesktop
+notification spec over D-Bus so they never steal focus.
 
 ### Click actions
 
@@ -413,27 +400,41 @@ You can also force a re-link with the new `maiocr repair` command:
 maiocr repair
 ```
 
-### Custom Notification Bubble does not appear
+### Notifications do not appear
 
-1. Make sure the bubble backend is actually selected:
+MaiOCR delivers notifications through the freedesktop notification
+spec over D-Bus (``org.freedesktop.Notifications``), rendered by
+your notification daemon (mako, dunst, fnott, the dms / quickshell
+built-in notifier, …).  If a notification is missing:
+
+1. Confirm a notification daemon is actually running on your
+   session.  On a bare Niri setup the installer installs ``mako``
+   for you:
    ```bash
-   maiocr settings set notification_mode=custom
-   maiocr restart
-   journalctl --user -u MaiOCR-tray.service -n 30 | grep -i "bubble\|backend"
+   pgrep -x mako || pgrep -x dunst || pgrep -x fnott
    ```
-2. Check that the tray process loaded PyQt6:
+2. Verify the D-Bus backend is selected and reachable:
    ```bash
-   ls /proc/$(pgrep -f maiocr-tray | head -1)/maps | grep -i "libQt6Widgets"
+   maiocr settings show | grep notification_mode
+   # expected: "system" or "custom" (an alias for "dbus")
    ```
-3. The bubble should appear in the bottom-right corner of the
-   primary screen within ~2 s of any state change (``maiocr start``
-   / ``stop`` / ``restart``).  On Niri / Sway the bubble is a real
-   top-level window — make sure no compositor rule is hiding it.
-4. If the bubble still does not appear, check the journal for
-   errors.  The harmless message
-   ``This plugin does not support setting window opacity`` is just
-   a warning that the fade-in animation could not run; the bubble
-   itself is shown at full opacity.
+   The tray logs which backend it picked at start-up:
+   ```bash
+   journalctl --user -u MaiOCR-tray.service -n 30 | grep -i "backend\|notification"
+   ```
+   You should see ``active=dbus`` when the D-Bus Notifications
+   service is available.
+3. If the mode is ``system``, check that ``notify-send`` exists
+   (``libnotify`` is installed by the installer).
+4. The D-Bus notification spec never creates a MaiOCR window, so
+   there is no MaiOCR Wayland surface to hide — if the daemon is
+   running and the backend is active, the bubble appears from your
+   daemon.  Check the daemon's own logs if it still does not show.
+
+Notifications triggered from a terminal (``maiocr run``,
+``maiocr start``, …) are dropped as a request file for the tray
+process to forward to the backend; this can add up to ~2 s of
+latency (one tray refresh cycle).
 
 ### `maiocr gpu-info` reports CPU only
 
@@ -475,7 +476,7 @@ System packages (`wl-clipboard`, `cudnn`, …) are left in place.
 git clone https://github.com/Melony-mai/maiocr.git
 cd maiocr
 uv sync --extra dev            # creates ./.venv
-.venv/bin/python -m pytest     # 50+ tests
+.venv/bin/python -m pytest     # 120+ tests
 ```
 
 The Python package lives in `src/maiocr/`. Entry points:

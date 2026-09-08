@@ -450,6 +450,18 @@ def _try_qt_tray() -> int | None:
     s = settings_mod.get_settings()
     i18n.set_default_language(s.language)
 
+    # Keep strong references to any dialogs we open so they survive
+    # the function returning.  PyQt6 holds dialogs through the
+    # parent/child Qt ownership chain, but our dialogs are created
+    # with no Qt parent; once the Python wrapper goes out of scope
+    # the GC destroys the underlying C++ QObject and the window
+    # vanishes from the screen within milliseconds of being shown.
+    # This is the bug that made ``Preferences`` (and the info
+    # dialogs) appear to do nothing on click.  Each new dialog is
+    # appended here and removed in its ``finished`` slot so a
+    # long-running tray does not accumulate dead references.
+    _open_dialogs: "list[QDialog]" = []
+
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName(i18n.t("app.name"))
@@ -655,6 +667,11 @@ def _try_qt_tray() -> int | None:
         refresh_btn.clicked.connect(lambda: _refresh_then_redraw(dlg, view, title))
         buttons.addButton(refresh_btn, QDialogButtonBox.ButtonRole.ActionRole)
         layout.addWidget(buttons)
+        # Pin the dialog so it survives this function returning;
+        # otherwise the local ``dlg`` goes out of scope, the Python
+        # wrapper is GC'd, and the window vanishes immediately.
+        _open_dialogs.append(dlg)
+        dlg.finished.connect(lambda *_: _open_dialogs.remove(dlg))
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -847,21 +864,41 @@ def _try_qt_tray() -> int | None:
         log.info("open_preferences called; creating dialog")
         try:
             dlg = PreferencesDialog()
-            dlg.show()
-            dlg.raise_()
-            dlg.activateWindow()
-            log.info("Preferences dialog shown: visible=%s, modal=%s",
-                     dlg.isVisible(), dlg.isModal())
         except Exception as exc:
-            log.exception("failed to open preferences dialog: %s", exc)
+            log.exception("failed to construct preferences dialog: %s", exc)
             return
 
-        def _on_close():
+        # Pin the dialog to the tray's lifetime: the local ``dlg``
+        # variable goes out of scope when this function returns and
+        # the Python wrapper would otherwise be GC'd, destroying the
+        # C++ QObject and causing the window to disappear the instant
+        # it opens.  We append it to ``_open_dialogs`` and remove the
+        # reference again in ``finished`` so we never leak.
+        _open_dialogs.append(dlg)
+
+        def _drop_ref(*_):
+            try:
+                _open_dialogs.remove(dlg)
+            except ValueError:
+                pass
             try:
                 refresh()
             except Exception:
                 pass
-        dlg.finished.connect(_on_close)
+
+        dlg.finished.connect(_drop_ref)
+
+        try:
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            log.info("Preferences dialog shown: visible=%s, modal=%s, "
+                     "open_dialogs=%d",
+                     dlg.isVisible(), dlg.isModal(), len(_open_dialogs))
+        except Exception as exc:
+            log.exception("failed to show preferences dialog: %s", exc)
+            _drop_ref()
+            return
 
     class PreferencesDialog(QDialog):
         def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -1111,6 +1148,14 @@ def main() -> int:
 
     s = settings_mod.get_settings()
     i18n.set_default_language(s.language)
+    # Configure the rotating log file before anything else so
+    # ``log.info(...)`` calls inside the tray (and every other
+    # maiocr.* logger) actually reach disk / the journal.  Without
+    # this the tray logger has no handlers and ``log.info`` is
+    # silently dropped, which is why past regressions like the
+    # disappearing Preferences dialog were invisible in the logs.
+    from maiocr import logging_utils
+    logging_utils.configure()
     notifications.initialise()
     paths.RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_status_file()
