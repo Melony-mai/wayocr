@@ -17,17 +17,16 @@ def _request(payload: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
     try:
         sock.settimeout(timeout)
         sock.connect(str(_socket_path()))
-        sock.sendall(json.dumps(payload).encode("utf-8"))
+        sock.sendall(json.dumps(payload).encode("utf-8") + b"\n")
         data = b""
         while True:
             chunk = sock.recv(65536)
             if not chunk:
                 break
             data += chunk
-            if len(chunk) < 65536:
+            if b"\n" in chunk or len(chunk) < 65536:
                 try:
-                    json.loads(data.decode("utf-8"))
-                    break
+                    return json.loads(data.decode("utf-8"))
                 except Exception:
                     continue
         return json.loads(data.decode("utf-8"))

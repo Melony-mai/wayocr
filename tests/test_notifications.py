@@ -12,7 +12,6 @@ We focus on the *event / backend / manager* contract:
 """
 from __future__ import annotations
 
-import os
 import sys
 import threading
 from unittest import mock
@@ -402,7 +401,7 @@ def test_initialise_does_not_crash_when_called_twice():
     notifications.initialise()
     notifications.initialise()
     assert notifications.get_manager().get_active_name() in {
-        "system", "custom", "null"
+        "system", "custom", "null", "dbus"
     }
 
 
@@ -722,7 +721,7 @@ def test_dbus_backend_routes_silent_events_as_transient():
     history.  Skipped when the ``dbus`` module is not available
     (it's an optional dependency).
     """
-    dbus = pytest.importorskip("dbus")
+    pytest.importorskip("dbus")
 
     fake_iface = mock.MagicMock()
     fake_proxy = mock.MagicMock()
@@ -734,6 +733,7 @@ def test_dbus_backend_routes_silent_events_as_transient():
     backend._proxy = fake_proxy
     fake_dbus_module = mock.MagicMock()
     fake_dbus_module.Interface = lambda *a, **kw: fake_iface
+    fake_dbus_module.Boolean.side_effect = lambda v: int(v)
     with mock.patch.object(ns, "dbus", fake_dbus_module, create=True):
         ev = ns.Event(
             id="x", kind=ns.EventKind.SILENT,
@@ -751,7 +751,7 @@ def test_dbus_backend_omits_transient_for_regular_events():
     """Regular (non-silent) events must NOT carry the transient
     hint so the notification appears in the history.
     """
-    dbus = pytest.importorskip("dbus")
+    pytest.importorskip("dbus")
 
     fake_iface = mock.MagicMock()
     fake_proxy = mock.MagicMock()

@@ -127,9 +127,9 @@ def handle_request(conn: socket.socket, ocr: OCR) -> str:
             if not chunk:
                 break
             data += chunk
-            if len(chunk) < 65536:
+            if b"\n" in chunk or len(chunk) < 65536:
                 try:
-                    json.loads(data.decode("utf-8"))
+                    request = json.loads(data.decode("utf-8"))
                     break
                 except Exception:
                     continue
@@ -141,7 +141,7 @@ def handle_request(conn: socket.socket, ocr: OCR) -> str:
             request: Dict[str, Any] = json.loads(data.decode("utf-8"))
         except Exception as exc:
             conn.sendall(
-                json.dumps({"error": f"bad request: {exc}"}).encode("utf-8")
+                (json.dumps({"error": f"bad request: {exc}"}) + "\n").encode("utf-8")
             )
             return op_name
 
@@ -150,7 +150,7 @@ def handle_request(conn: socket.socket, ocr: OCR) -> str:
         lang = request.get("lang") or i18n.get_default_language()
 
         if op == "ping":
-            conn.sendall(json.dumps({"pong": True}).encode("utf-8"))
+            conn.sendall((json.dumps({"pong": True}) + "\n").encode("utf-8"))
             return op_name
 
         if op == "status":
@@ -161,21 +161,20 @@ def handle_request(conn: socket.socket, ocr: OCR) -> str:
                 "gpu_available": ocr.info.available,
                 "gpu_device": ocr.info.device_name,
             }
-            conn.sendall(json.dumps(payload).encode("utf-8"))
+            conn.sendall((json.dumps(payload) + "\n").encode("utf-8"))
             return op_name
 
         if op == "release_vram":
             released = ocr.release_vram()
             _write_status(engine_loaded=False, provider=ocr.provider)
             _log(f"release_vram requested -> released={released}")
-            conn.sendall(json.dumps({"released": released}).encode("utf-8"))
+            conn.sendall((json.dumps({"released": released}) + "\n").encode("utf-8"))
             return op_name
 
         if op == "shutdown":
-            conn.sendall(json.dumps({"shutdown": True}).encode("utf-8"))
+            conn.sendall((json.dumps({"shutdown": True}) + "\n").encode("utf-8"))
             conn.close()
-            os._exit(0)  # noqa: SLF001
-            return op_name
+            raise SystemExit(0)
 
         if op == "settings_get":
             s = settings_mod.get_settings(reload=True)
@@ -231,9 +230,8 @@ def handle_request(conn: socket.socket, ocr: OCR) -> str:
             boxes = ocr.recognize(processed)
         except Exception as exc:
             _log(f"OCR error: {exc}\n{traceback.format_exc()}")
-            conn.sendall(
-                json.dumps({"error": _tr(lang, "errors.ocr_failed", error=str(exc))}).encode("utf-8")
-            )
+            err_msg = _tr(lang, "errors.ocr_failed", error=str(exc))
+            conn.sendall((json.dumps({"error": err_msg}) + "\n").encode("utf-8"))
             return op_name
 
         ocr_t = time.perf_counter()

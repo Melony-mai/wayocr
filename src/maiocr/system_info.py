@@ -7,12 +7,10 @@ tray menu items render. Everything is collected lazily so a missing
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import socket
 import subprocess
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from maiocr import client, gpu

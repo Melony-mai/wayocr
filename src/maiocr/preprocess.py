@@ -29,7 +29,7 @@ import numpy as np
 def _read(path: str) -> np.ndarray:
     img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
-        raise RuntimeError(f"无法读取图片: {path}")
+        raise RuntimeError(f"Could not read image: {path}")
     return img
 
 
@@ -80,13 +80,8 @@ def preprocess_image(image_path: str) -> np.ndarray:
 
     if hi - lo < 60:
         gray = _clahe(gray)
-        lo, hi = _luma_range(gray)
 
     gray = _invert_if_dark(gray)
-
-    if hi - lo < 60:
-        gray = _clahe(gray)
-
     return gray
 
 

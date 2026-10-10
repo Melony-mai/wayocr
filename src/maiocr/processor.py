@@ -23,6 +23,7 @@ pipeline keeps working.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import List, Optional, Sequence, Tuple
 
 from maiocr.ocr import OcrResult, TextBox
@@ -84,7 +85,7 @@ def _group_lines(boxes: Sequence[TextBox]) -> List[_Line]:
 
     for line in lines:
         line.boxes.sort(key=lambda b: b.x)
-    lines.sort(key=lambda l: l.y)
+    lines.sort(key=lambda line: line.y)
     return lines
 
 
@@ -176,7 +177,6 @@ def detect_indent(line: _Line, prev_indent_cols: int) -> Tuple[int, str]:
     if not line.boxes:
         return prev_indent_cols, ""
     char_w = _median_char_width(line.boxes)
-    first_x = min(b.x for b in line.boxes)
     body = _render_line(line, char_w)
     if not body:
         return prev_indent_cols, ""
@@ -232,7 +232,6 @@ def _cleanup(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     # collapse runs of spaces that exceed what's likely deliberate
     # alignment: keep up to 8 spaces, collapse 9+.
-    import re
     text = re.sub(r" {9,}", "        ", text)
     # collapse 3+ consecutive blank lines to 2
     text = re.sub(r"\n{4,}", "\n\n\n", text)

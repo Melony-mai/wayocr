@@ -24,17 +24,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 from maiocr import client, gpu, i18n, notifications, settings as settings_mod
-# notify is the legacy shim; prefer the new ``notifications`` module
-# for high-level helpers (notify_service_started, notify_ocr_completed,
-# …). ``notify.notify`` still works for one-off messages.
-from maiocr import notify  # noqa: E402
 
 
 SERVICE = "MaiOCR.service"
@@ -45,22 +40,11 @@ OLD_SERVICE = "wayocr-server.service"
 
 
 def _systemctl(args, check=True):
-    """Run a systemctl command against the active service name."""
-    last_error: Optional[subprocess.CalledProcessError] = None
-    for name in (SERVICE, SERVICE_FALLBACK):
-        try:
-            return subprocess.run(
-                ["systemctl", "--user", *args],
-                check=check,
-            )
-        except subprocess.CalledProcessError as exc:
-            last_error = exc
-            if name == SERVICE_FALLBACK:
-                raise
-            continue
-    if last_error:
-        raise last_error
-    return None
+    """Run a systemctl command against user systemd."""
+    return subprocess.run(
+        ["systemctl", "--user", *args],
+        check=check,
+    )
 
 
 def _service_name() -> str:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,3 @@ def is_gpu_active() -> bool:
         except ValueError:
             continue
     return False
-
-
-# Re-export of Path import for the helper above.
-from pathlib import Path  # noqa: E402

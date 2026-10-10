@@ -28,6 +28,8 @@ env/
 htmlcov/
 .tox/
 .cache
+.ruff_cache/
+.mypy_cache/
 
 # OCR temporary files
 *_processed.png

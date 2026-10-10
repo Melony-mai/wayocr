@@ -244,9 +244,16 @@ if [ -d ".venv" ] && [ -n "${SYSTEM_SITE}" ]; then
     _link_pyqt6_into "${site_base}" \
         && _link_distinfo_into "${site_base}" "PyQt6" \
         && _link_pkg_into "${site_base}" "dbus" \
-        && _link_distinfo_into "${site_base}" "dbus" \
-        && log "PyQt6 + dbus available in the project venv" \
-        || warn "could not link PyQt6 / dbus into the project venv"
+        && _link_distinfo_into "${site_base}" "dbus"
+    for so_file in "${SYSTEM_SITE}"/_dbus_bindings*.so \
+                    "${SYSTEM_SITE}"/_dbus_glib_bindings*.so; do
+        [ -f "${so_file}" ] || continue
+        name="$(basename "${so_file}")"
+        target="${site_base}/${name}"
+        [ -e "${target}" ] && rm -f "${target}"
+        ln -sfn "${so_file}" "${target}"
+    done
+    log "PyQt6 + dbus available in the project venv"
 fi
 
 # Tool install: pin to the system Python so the system PyQt6 lines

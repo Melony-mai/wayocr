@@ -25,18 +25,17 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-log = logging.getLogger("maiocr.tray")
+from typing import Optional
 
 from maiocr import client, gpu, i18n, notifications, resources, settings as settings_mod
 from maiocr import paths, system_info, tray_actions
+
+log = logging.getLogger("maiocr.tray")
 
 
 SERVICE = "MaiOCR.service"
@@ -50,9 +49,6 @@ def _drain_notification_requests() -> int:
     tray's ``refresh()`` so the bubble appears within a couple of
     seconds of the CLI writing the request.
     """
-    import json
-    import os
-
     notify_dir = paths.NOTIFY_DIR
     if not notify_dir.is_dir():
         return 0
@@ -398,7 +394,6 @@ def _try_popup(title: str, body: str) -> None:
     if QApplication.instance() is None:
         return  # no display / no event loop
 
-    app = QApplication.instance()
     dlg = QDialog()
     dlg.setWindowTitle(title)
     dlg.resize(560, 420)
@@ -433,7 +428,6 @@ def _try_qt_tray() -> int | None:
             QDialog,
             QDialogButtonBox,
             QFormLayout,
-            QHBoxLayout,
             QLabel,
             QMenu,
             QPlainTextEdit,
@@ -593,7 +587,6 @@ def _try_qt_tray() -> int | None:
     def refresh() -> None:
         payload = _refresh_status()
         state = state_from_payload(payload)
-        new_state = state
         old_state = current_state["value"]
         current_state["value"] = state
         current_state["provider"] = payload.get("provider", "unloaded")

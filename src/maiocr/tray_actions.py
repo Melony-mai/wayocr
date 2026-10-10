@@ -20,7 +20,7 @@ module stays free of Qt imports and is unit-testable.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List
+from typing import List
 
 
 @dataclass(frozen=True)

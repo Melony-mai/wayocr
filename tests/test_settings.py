@@ -1,8 +1,6 @@
 """Tests for the persistent user settings module."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from maiocr import i18n, settings as settings_mod
@@ -58,3 +56,19 @@ def test_update_ignores_unknown_keys():
     s = settings_mod.get_settings(reload=True)
     s.update(language="zh-CN", unknown_key="ignored")
     assert s.language == "zh-CN"
+
+
+def test_load_custom_path_preserves_target_file(tmp_path):
+    custom_cfg = tmp_path / "custom_subdir" / "my_settings.yml"
+    custom_cfg.parent.mkdir(parents=True)
+    # Write only a subset of keys (missing new defaults)
+    custom_cfg.write_text("language: zh-CN\nprefer_gpu: false\n")
+
+    loaded = settings_mod.Settings.load(custom_cfg)
+    assert loaded.language == "zh-CN"
+    assert loaded.prefer_gpu is False
+    # Verify defaults were saved to custom_cfg, not global CONFIG_FILE
+    assert custom_cfg.exists()
+    content = custom_cfg.read_text()
+    assert "log_level" in content
+

@@ -15,14 +15,6 @@ def capture() -> str:
     if not shutil.which("grim"):
         raise RuntimeError(i18n.t("errors.grim_missing"))
 
-    temp_file = tempfile.NamedTemporaryFile(
-        suffix=".png",
-        prefix="maiocr_",
-        delete=False,
-    )
-    image_path = Path(temp_file.name)
-    temp_file.close()
-
     try:
         geometry = subprocess.check_output(["slurp"], text=True).strip()
     except subprocess.CalledProcessError:
@@ -33,12 +25,24 @@ def capture() -> str:
     if not geometry:
         raise RuntimeError(i18n.t("errors.capture_cancelled"))
 
+    temp_file = tempfile.NamedTemporaryFile(
+        suffix=".png",
+        prefix="maiocr_",
+        delete=False,
+    )
+    image_path = Path(temp_file.name)
+    temp_file.close()
+
     try:
         subprocess.run(
             ["grim", "-g", geometry, str(image_path)],
             check=True,
         )
     except FileNotFoundError:
+        image_path.unlink(missing_ok=True)
         raise RuntimeError(i18n.t("errors.grim_missing"))
+    except Exception:
+        image_path.unlink(missing_ok=True)
+        raise
 
     return str(image_path)

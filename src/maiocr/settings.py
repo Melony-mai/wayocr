@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 import threading
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -91,7 +91,7 @@ class Settings:
         # on-disk view stays in sync with the dataclass.
         defaults = {f.name: getattr(inst, f.name) for f in fields(cls)}
         if any(k not in raw for k in defaults):
-            inst.save()
+            inst.save(path)
         return inst
 
     def _save_unchecked(self, path: Path) -> None:

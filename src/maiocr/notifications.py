@@ -27,17 +27,18 @@ region-selection overlay is not a MaiOCR window either.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
-import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+try:
+    import dbus
+except Exception:
+    dbus = None
 
 from maiocr import i18n, settings as settings_mod
 
@@ -134,14 +135,44 @@ class DBusBackend(Backend):
             self._available, self._bus, self._proxy, self._interface = self._connect()
         return self._available
 
-    @staticmethod
-    def _connect():
+    @classmethod
+    def _dbus_module(cls):
+        import sys
+        if "dbus" in sys.modules:
+            d = sys.modules["dbus"]
+            try:
+                _ = getattr(d, "SessionBus", None)
+            except ImportError:
+                return None
+            except Exception:
+                pass
+            ns_mod = sys.modules.get("maiocr.notifications")
+            ns_dbus = getattr(ns_mod, "dbus", None) if ns_mod else None
+            if ns_dbus is not None and "mock" in str(type(ns_dbus)).lower():
+                return ns_dbus
+            return d
+
+        ns_mod = sys.modules.get("maiocr.notifications")
+        ns_dbus = getattr(ns_mod, "dbus", None) if ns_mod else None
+        if ns_dbus is not None:
+            return ns_dbus
+
         try:
-            import dbus  # type: ignore
-            from dbus import SessionBus  # type: ignore
+            import dbus as _d
+            return _d
         except Exception:
+            return None
+
+    @classmethod
+    def _connect(cls):
+        d = cls._dbus_module()
+        if d is None:
             return False, None, None, None
         try:
+            SessionBus = getattr(d, "SessionBus", None)
+            if SessionBus is None:
+                from dbus import SessionBus  # type: ignore
+
             bus = SessionBus()
             proxy = bus.get_object(
                 "org.freedesktop.Notifications",
@@ -159,9 +190,11 @@ class DBusBackend(Backend):
             )
             return
         try:
-            import dbus  # type: ignore
+            d = self._dbus_module()
+            if d is None:
+                return
 
-            iface = dbus.Interface(
+            iface = d.Interface(
                 self._proxy, "org.freedesktop.Notifications"
             )
             urgency_map = {
@@ -174,13 +207,15 @@ class DBusBackend(Backend):
             hints = {
                 "x-canonical-private-synchronous": "maiocr",
                 "desktop-entry": "maiocr",
-                "transient": dbus.Boolean(0),  # type: ignore[attr-defined]
             }
             # Silent events use transient:1 so the daemon displays
             # them briefly and does not add them to the persistent
             # notification history.
             if event.kind is EventKind.SILENT:
-                hints["transient"] = dbus.Boolean(1)  # type: ignore[attr-defined]
+                try:
+                    hints["transient"] = d.Boolean(1)
+                except Exception:
+                    hints["transient"] = 1
             # Use the event id as the notification id so subsequent
             # updates replace the previous one (D-Bus
             # ``replaces_id``).

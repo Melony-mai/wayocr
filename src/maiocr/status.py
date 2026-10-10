@@ -5,10 +5,25 @@ import json
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 from maiocr import client, i18n, settings
 from maiocr.paths import PID_FILE, SOCKET_PATH, STATUS_FILE
+
+
+def _format_provider(provider: str | None) -> str:
+    """Map execution provider name to localized description."""
+    if not provider or provider == "unloaded":
+        return i18n.t("provider.unloaded")
+    p = provider.lower()
+    if "cuda" in p:
+        return i18n.t("provider.cuda")
+    if "tensorrt" in p:
+        return i18n.t("provider.tensorrt")
+    if "cpu" in p:
+        return i18n.t("provider.cpu")
+    key = f"provider.{provider}"
+    res = i18n.t(key)
+    return res if res != key else provider
 
 
 SERVICE = "MaiOCR.service"
@@ -67,9 +82,7 @@ def main() -> int:
                 else "status.engine_unloaded_value"
             )
             if data.get("engine_loaded"):
-                provider_state = i18n.t(
-                    "provider." + (data.get("provider") or "unloaded")
-                )
+                provider_state = _format_provider(data.get("provider"))
                 print(
                     f"{i18n.t('status.engine_label')}: {engine_state} ({provider_state})"
                 )

@@ -178,20 +178,6 @@ class OCR:
         except Exception:
             pass
 
-        try:
-            import onnxruntime as ort  # noqa: WPS433
-            cuda = "CUDAExecutionProvider" in ort.get_available_providers()
-            if cuda:
-                try:
-                    from onnxruntime.capi._pybind_state import (
-                        OrtDevice,
-                        get_available_providers,  # noqa: F401
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
         return True
 
     def recognize(self, image: np.ndarray) -> OcrResult:
@@ -203,7 +189,7 @@ class OCR:
         # RapidOCR accepts a numpy array directly; it returns a
         # RapidOCROutput object (or a 2-tuple on older versions).
         raw = self._engine(image)
-        elapsed = time.perf_counter() - start
+        _ = time.perf_counter() - start
 
         boxes_list = self._extract_boxes(raw)
 
@@ -217,8 +203,6 @@ class OCR:
                 )
             )
 
-        if elapsed < 0:
-            return OcrResult([])
         return OcrResult(boxes)
 
     @staticmethod
@@ -229,7 +213,7 @@ class OCR:
         txts = getattr(raw, "txts", None)
         scores = getattr(raw, "scores", None)
         if boxes is not None and txts is not None:
-            n = len(txts)
+            n = min(len(boxes), len(txts))
             out = []
             for i in range(n):
                 box = boxes[i]
